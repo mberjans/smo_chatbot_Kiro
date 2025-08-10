@@ -1,0 +1,173 @@
+version: '3.8'
+
+services:
+  # Main application
+  lightrag-oracle:
+    build:
+      context: ../../..
+      dockerfile: src/lightrag_integration/deployment/Dockerfile
+    container_name: lightrag-oracle
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/clinical_metabolomics_oracle
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_URI=bolt://neo4j:7687
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PERPLEXITY_API=${PERPLEXITY_API}
+      - LIGHTRAG_KG_PATH=/app/data/lightrag_kg
+      - LIGHTRAG_VECTOR_PATH=/app/data/lightrag_vectors
+      - LIGHTRAG_CACHE_PATH=/app/data/lightrag_cache
+      - LIGHTRAG_EMBEDDING_MODEL=intfloat/e5-base-v2
+      - LIGHTRAG_LLM_MODEL=groq:Llama-3.3-70b-Versatile
+      - ENABLE_MONITORING=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - lightrag_data:/app/data
+      - lightrag_papers:/app/papers
+      - lightrag_logs:/app/logs
+    depends_on:
+      - postgres
+      - neo4j
+    networks:
+      - lightrag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    container_name: lightrag-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=clinical_metabolomics_oracle
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - lightrag-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Neo4j graph database
+  neo4j:
+    image: neo4j:5.15-community
+    container_name: lightrag-neo4j
+    restart: unless-stopped
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=512m
+      - NEO4J_dbms_memory_heap_max__size=2g
+      - NEO4J_dbms_memory_pagecache_size=1g
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    networks:
+      - lightrag-network
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Redis for caching (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: lightrag-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - lightrag-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lightrag-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - lightrag-network
+    profiles:
+      - monitoring
+
+  # Grafana for visualization (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lightrag-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - lightrag-network
+    profiles:
+      - monitoring
+
+volumes:
+  lightrag_data:
+    driver: local
+  lightrag_papers:
+    driver: local
+  lightrag_logs:
+    driver: local
+  postgres_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  lightrag-network:
+    driver: bridge

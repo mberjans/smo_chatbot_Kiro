@@ -1,0 +1,13 @@
+Sample Questions for Clinical Metabolomics Oracle Testing
+============================================================
+
+1. What is clinical metabolomics?
+2. What are the main analytical techniques used in metabolomics?
+3. How is metabolomics used in personalized medicine?
+4. What are metabolomics biomarkers?
+5. What are the challenges in metabolomics data analysis?
+6. How does mass spectrometry work in metabolomics?
+7. What is the role of NMR in metabolomics?
+8. How are metabolomics biomarkers used in cancer detection?
+9. What is pharmacometabolomics?
+10. What are the applications of metabolomics in drug development?

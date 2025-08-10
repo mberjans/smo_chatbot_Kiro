@@ -1,0 +1,8 @@
+I'm a specialized AI assistant designed to help you with clinical metabolomics research. I can access scientific literature and provide evidence-based responses with citations.
+
+I use multiple AI systems including:
+• LightRAG with PDF knowledge base
+• Perplexity AI via OpenRouter (with real-time web search)
+• Intelligent fallback responses
+
+To get started, simply ask me any question about clinical metabolomics!

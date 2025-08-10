@@ -1,0 +1,202 @@
+# Logging configuration for LightRAG Integration
+
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  standard:
+    format: '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+  
+  detailed:
+    format: '%(asctime)s [%(levelname)s] %(name)s:%(lineno)d [%(funcName)s]: %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+  
+  json:
+    class: pythonjsonlogger.jsonlogger.JsonFormatter
+    format: '%(asctime)s %(name)s %(levelname)s %(message)s'
+  
+  access:
+    format: '%(asctime)s [ACCESS] %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+
+filters:
+  require_debug_false:
+    (): logging.Filter
+    name: ''
+    level: INFO
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: INFO
+    formatter: standard
+    stream: ext://sys.stdout
+  
+  file:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: detailed
+    filename: logs/lightrag.log
+    maxBytes: 52428800  # 50MB
+    backupCount: 10
+    encoding: utf8
+  
+  error_file:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: detailed
+    filename: logs/lightrag_errors.log
+    maxBytes: 52428800  # 50MB
+    backupCount: 10
+    encoding: utf8
+  
+  access_file:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: access
+    filename: logs/lightrag_access.log
+    maxBytes: 52428800  # 50MB
+    backupCount: 5
+    encoding: utf8
+  
+  performance_file:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: json
+    filename: logs/lightrag_performance.log
+    maxBytes: 52428800  # 50MB
+    backupCount: 5
+    encoding: utf8
+  
+  security_file:
+    class: logging.handlers.RotatingFileHandler
+    level: WARNING
+    formatter: detailed
+    filename: logs/lightrag_security.log
+    maxBytes: 52428800  # 50MB
+    backupCount: 10
+    encoding: utf8
+
+loggers:
+  # LightRAG Integration loggers
+  lightrag_integration:
+    level: DEBUG
+    handlers: [console, file, error_file]
+    propagate: false
+  
+  lightrag_integration.component:
+    level: DEBUG
+    handlers: [file, error_file]
+    propagate: false
+  
+  lightrag_integration.ingestion:
+    level: INFO
+    handlers: [file, error_file]
+    propagate: false
+  
+  lightrag_integration.query:
+    level: INFO
+    handlers: [file, error_file]
+    propagate: false
+  
+  lightrag_integration.routing:
+    level: INFO
+    handlers: [file, error_file]
+    propagate: false
+  
+  lightrag_integration.monitoring:
+    level: INFO
+    handlers: [file, performance_file]
+    propagate: false
+  
+  lightrag_integration.error_handling:
+    level: WARNING
+    handlers: [error_file, security_file]
+    propagate: false
+  
+  # Access logging
+  access:
+    level: INFO
+    handlers: [access_file]
+    propagate: false
+  
+  # Performance logging
+  performance:
+    level: INFO
+    handlers: [performance_file]
+    propagate: false
+  
+  # Security logging
+  security:
+    level: WARNING
+    handlers: [security_file, error_file]
+    propagate: false
+  
+  # Third-party library loggers
+  chainlit:
+    level: INFO
+    handlers: [file]
+    propagate: false
+  
+  uvicorn:
+    level: INFO
+    handlers: [access_file]
+    propagate: false
+  
+  uvicorn.access:
+    level: INFO
+    handlers: [access_file]
+    propagate: false
+  
+  uvicorn.error:
+    level: ERROR
+    handlers: [error_file]
+    propagate: false
+  
+  neo4j:
+    level: WARNING
+    handlers: [file, error_file]
+    propagate: false
+  
+  sqlalchemy:
+    level: WARNING
+    handlers: [file]
+    propagate: false
+  
+  httpx:
+    level: WARNING
+    handlers: [file]
+    propagate: false
+
+root:
+  level: INFO
+  handlers: [console, file]
+
+# Environment-specific overrides
+development:
+  loggers:
+    lightrag_integration:
+      level: DEBUG
+    root:
+      level: DEBUG
+
+production:
+  handlers:
+    console:
+      level: WARNING
+  loggers:
+    lightrag_integration:
+      level: INFO
+    root:
+      level: INFO
+
+testing:
+  handlers:
+    console:
+      level: CRITICAL
+  loggers:
+    lightrag_integration:
+      level: DEBUG
+    root:
+      level: WARNING

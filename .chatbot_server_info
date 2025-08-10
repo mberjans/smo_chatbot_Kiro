@@ -1,0 +1,4 @@
+port=8001
+pid=50248
+url=http://localhost:8001
+type=uvicorn

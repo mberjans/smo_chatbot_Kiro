@@ -1,0 +1,49 @@
+[Unit]
+Description=Clinical Metabolomics Oracle with LightRAG Integration
+Documentation=https://github.com/your-org/clinical-metabolomics-oracle
+After=network.target postgresql.service neo4j.service
+Wants=postgresql.service neo4j.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=oracle
+Group=oracle
+WorkingDirectory=/opt/clinical-metabolomics-oracle
+Environment=PATH=/opt/clinical-metabolomics-oracle/venv/bin
+Environment=PYTHONPATH=/opt/clinical-metabolomics-oracle/src
+ExecStart=/opt/clinical-metabolomics-oracle/venv/bin/python src/main.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+TimeoutStartSec=60
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lightrag-oracle
+
+# Security settings
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/clinical-metabolomics-oracle/data
+ReadWritePaths=/opt/clinical-metabolomics-oracle/logs
+ReadWritePaths=/opt/clinical-metabolomics-oracle/papers
+ReadWritePaths=/opt/clinical-metabolomics-oracle/src/.files
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

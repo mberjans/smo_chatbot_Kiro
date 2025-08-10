@@ -1,0 +1,42 @@
+# LightRAG Configuration Example
+# This file demonstrates the available configuration options
+
+# Storage configuration
+knowledge_graph_path: "./data/lightrag_kg"
+vector_store_path: "./data/lightrag_vectors"
+cache_directory: "./data/lightrag_cache"
+
+# Processing configuration
+chunk_size: 1500
+chunk_overlap: 300
+max_entities_per_chunk: 75
+
+# Model configuration
+embedding_model: "intfloat/e5-large-v2"
+llm_model: "groq:Llama-3.3-70b-Versatile"
+
+# Performance configuration
+batch_size: 64
+max_concurrent_requests: 15
+cache_ttl_seconds: 7200
+
+# Papers directory
+papers_directory: "./papers"
+
+# Logging configuration
+log_level: "DEBUG"
+
+# Feature flags
+enable_entity_extraction: true
+enable_relationship_extraction: true
+enable_caching: true
+
+# Advanced processing options
+min_entity_confidence: 0.8
+min_relationship_confidence: 0.7
+max_document_size_mb: 100
+
+# Query processing configuration
+max_query_length: 2000
+default_top_k: 15
+similarity_threshold: 0.6
