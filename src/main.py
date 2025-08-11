@@ -12,7 +12,10 @@ from callbacks import CustomLlamaIndexCallbackHandler
 from citation import postprocess_citation
 from lingua_iso_codes import IsoCode639_1
 from pipelines import get_pipeline
-from translation import BaseTranslator, detect_language, get_language_detector, get_translator, translate
+from translation import (
+    BaseTranslator, detect_language, get_language_detector, get_translator, translate,
+    translate_lightrag_response, is_lightrag_response
+)
 
 # LightRAG integration
 from lightrag_integration.component import LightRAGComponent
@@ -370,7 +373,24 @@ async def on_message(message: cl.Message):
 
     # Translate response back to user's language if needed
     if language != "en" and language is not None:
-        response_content = await translate(translator, response_content, source="en", target=language)
+        # Check if this is a LightRAG response and use appropriate translation
+        if response_data and is_lightrag_response(response_data):
+            try:
+                # Use LightRAG-aware translation
+                translated_response_data = await translate_lightrag_response(
+                    response_data, translator, detector, language, "en"
+                )
+                response_content = translated_response_data["content"]
+                # Update bibliography with translated version
+                if translated_response_data.get("bibliography"):
+                    bibliography = translated_response_data["bibliography"]
+            except Exception as e:
+                logging.warning(f"LightRAG translation failed, using fallback: {str(e)}")
+                # Fallback to simple translation
+                response_content = await translate(translator, response_content, source="en", target=language)
+        else:
+            # Use regular translation for non-LightRAG responses
+            response_content = await translate(translator, response_content, source="en", target=language)
 
     # Add bibliography and timing information
     if bibliography:

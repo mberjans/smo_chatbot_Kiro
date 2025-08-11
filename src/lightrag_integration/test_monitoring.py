@@ -736,3 +736,375 @@ class TestNotificationHandlers:
 
 if __name__ == "__main__":
     pytest.main([__file__])
+
+
+class TestEnhancedPerformanceMonitor:
+    """Test cases for the EnhancedPerformanceMonitor class."""
+    
+    @pytest.fixture
+    def enhanced_monitor(self):
+        """Create an EnhancedPerformanceMonitor instance for testing."""
+        from .monitoring import EnhancedPerformanceMonitor
+        
+        config = {
+            'monitoring_interval': 0.1,
+            'health_check_interval': 0.2,
+            'error_rate_threshold': 10.0,
+            'response_time_threshold': 1.0,
+            'alerting': {
+                'thresholds': {
+                    'test_operation_avg_response_time': {
+                        'slow': {'value': 0.5, 'operator': 'gt', 'severity': 'warning'}
+                    }
+                }
+            }
+        }
+        return EnhancedPerformanceMonitor(config)
+    
+    def test_enhanced_monitor_initialization(self, enhanced_monitor):
+        """Test EnhancedPerformanceMonitor initialization."""
+        assert enhanced_monitor._error_handler is None
+        assert enhanced_monitor._health_check_interval == 0.2
+        assert enhanced_monitor._error_rate_threshold == 10.0
+        assert enhanced_monitor._response_time_threshold == 1.0
+    
+    def test_get_operation_metrics(self, enhanced_monitor):
+        """Test getting metrics for specific operation."""
+        # Record operations
+        enhanced_monitor.record_operation("specific_op", 0.1, True)
+        enhanced_monitor.record_operation("specific_op", 0.3, True)
+        enhanced_monitor.record_operation("specific_op", 0.2, False)
+        
+        metrics = enhanced_monitor.get_operation_metrics("specific_op")
+        
+        assert metrics is not None
+        assert metrics['operation_name'] == "specific_op"
+        assert metrics['total_calls'] == 3
+        assert metrics['successful_calls'] == 2
+        assert metrics['failed_calls'] == 1
+        assert abs(metrics['success_rate_percent'] - 66.67) < 1
+        assert abs(metrics['error_rate_percent'] - 33.33) < 1
+        assert abs(metrics['avg_duration_ms'] - 200.0) < 0.01  # (0.1 + 0.3 + 0.2) / 3 * 1000
+        
+        # Test non-existent operation
+        assert enhanced_monitor.get_operation_metrics("nonexistent") is None
+    
+    def test_export_metrics(self, enhanced_monitor):
+        """Test metrics export functionality."""
+        # Record some data
+        enhanced_monitor.record_operation("test_op", 0.1, True)
+        enhanced_monitor.set_metric("test_gauge", 50.0)
+        
+        # Export as JSON
+        json_export = enhanced_monitor.export_metrics("json")
+        
+        # Verify it's valid JSON
+        data = json.loads(json_export)
+        assert 'timestamp' in data
+        assert 'system_metrics' in data
+        assert 'performance_summary' in data
+        
+        # Test unsupported format
+        with pytest.raises(ValueError):
+            enhanced_monitor.export_metrics("xml")
+    
+    def test_get_health_status(self, enhanced_monitor):
+        """Test health status reporting."""
+        # Create some alerts to test health status
+        enhanced_monitor.alert_manager.create_alert(
+            severity=AlertSeverity.WARNING,
+            title="Test Warning",
+            message="Test warning message",
+            component="test"
+        )
+        
+        health_status = enhanced_monitor.get_health_status()
+        
+        assert health_status['status'] == 'warning'  # Should be warning due to active alert
+        assert 'timestamp' in health_status
+        assert 'system_metrics' in health_status
+        assert 'alerts' in health_status
+        assert health_status['alerts']['total'] == 1
+        assert health_status['alerts']['warning'] == 1
+        assert 'monitoring_active' in health_status
+    
+    def test_check_operation_health(self, enhanced_monitor):
+        """Test operation health checking."""
+        # Test unknown operation
+        health = enhanced_monitor.check_operation_health("unknown_op")
+        assert health['status'] == 'unknown'
+        assert 'No metrics available' in health['message']
+        
+        # Record operations with high error rate
+        for i in range(10):
+            success = i < 5  # 50% error rate
+            enhanced_monitor.record_operation("error_prone_op", 0.1, success)
+        
+        health = enhanced_monitor.check_operation_health("error_prone_op")
+        assert health['status'] == 'degraded'
+        assert health['error_rate_percent'] == 50.0
+        assert 'High error rate' in health['message']
+        
+        # Record operations with slow response time
+        for i in range(5):
+            enhanced_monitor.record_operation("slow_op", 2.0, True)  # 2 seconds
+        
+        health = enhanced_monitor.check_operation_health("slow_op")
+        assert health['status'] == 'degraded'
+        assert health['avg_duration_ms'] == 2000.0
+        assert 'Slow response time' in health['message']
+    
+    def test_get_system_diagnostics(self, enhanced_monitor):
+        """Test system diagnostics generation."""
+        # Record some operations
+        enhanced_monitor.record_operation("fast_op", 0.1, True)
+        enhanced_monitor.record_operation("slow_op", 2.5, True)  # Slow operation
+        enhanced_monitor.record_operation("error_op", 0.1, False)  # Error-prone
+        enhanced_monitor.record_operation("error_op", 0.1, False)
+        enhanced_monitor.record_operation("error_op", 0.1, True)  # 67% error rate
+        
+        diagnostics = enhanced_monitor.get_system_diagnostics()
+        
+        assert 'timestamp' in diagnostics
+        assert 'system_health' in diagnostics
+        assert 'performance_analysis' in diagnostics
+        assert 'alerts' in diagnostics
+        assert 'error_handler_integration' in diagnostics
+        
+        # Check performance analysis
+        perf_analysis = diagnostics['performance_analysis']
+        assert perf_analysis['total_operations'] == 3
+        
+        # Should detect slow operation
+        slow_ops = perf_analysis['slow_operations']
+        assert len(slow_ops) > 0
+        assert any(op['operation'] == 'slow_op' for op in slow_ops)
+        
+        # Should detect error-prone operation
+        error_ops = perf_analysis['error_prone_operations']
+        assert len(error_ops) > 0
+        assert any(op['operation'] == 'error_op' for op in error_ops)
+    
+    def test_integrate_with_error_handler(self, enhanced_monitor):
+        """Test integration with error handler."""
+        # Mock error handler
+        mock_error_handler = Mock()
+        mock_error_handler.get_error_statistics.return_value = {
+            'total_errors': 25,
+            'recent_errors_1h': 5,
+            'recent_errors_24h': 15,
+            'errors_by_category': {'pdf_processing': 10, 'query_processing': 15},
+            'errors_by_severity': {'medium': 20, 'high': 5},
+            'circuit_breakers_open': 1
+        }
+        
+        # Integrate with error handler
+        enhanced_monitor.integrate_with_error_handler(mock_error_handler)
+        
+        assert enhanced_monitor._error_handler is not None
+        assert hasattr(enhanced_monitor, '_error_metrics_tracker')
+        
+        # Test error metrics tracking
+        enhanced_monitor._error_metrics_tracker()
+        
+        # Check that error metrics were recorded
+        current_metrics = enhanced_monitor.metrics_collector.get_current_metrics()
+        assert current_metrics['errors_total'].value == 25
+        assert current_metrics['errors_recent_1h'].value == 5
+        assert current_metrics['errors_by_category_pdf_processing'].value == 10
+        
+        # Check that alerts were created for circuit breakers
+        active_alerts = enhanced_monitor.alert_manager.get_active_alerts()
+        circuit_breaker_alerts = [a for a in active_alerts if 'Circuit Breakers' in a.title]
+        assert len(circuit_breaker_alerts) > 0
+    
+    @pytest.mark.asyncio
+    async def test_run_health_check(self, enhanced_monitor):
+        """Test comprehensive health check."""
+        # Record some operations
+        enhanced_monitor.record_operation("healthy_op", 0.1, True)
+        enhanced_monitor.record_operation("unhealthy_op", 2.0, False)  # Slow and failed
+        
+        health_report = await enhanced_monitor.run_health_check()
+        
+        assert 'overall_status' in health_report
+        assert 'timestamp' in health_report
+        assert 'system_diagnostics' in health_report
+        assert 'operation_health' in health_report
+        assert 'recommendations' in health_report
+        
+        # Check operation health
+        op_health = health_report['operation_health']
+        assert 'healthy_op' in op_health
+        assert 'unhealthy_op' in op_health
+        
+        # Check recommendations
+        recommendations = health_report['recommendations']
+        assert isinstance(recommendations, list)
+        assert len(recommendations) > 0
+    
+    def test_generate_health_recommendations(self, enhanced_monitor):
+        """Test health recommendation generation."""
+        # Create mock diagnostics with various issues
+        diagnostics = {
+            'system_health': {
+                'cpu_usage_percent': 85.0,  # High CPU
+                'memory_usage_percent': 90.0,  # High memory
+                'disk_usage_percent': 95.0,  # High disk
+                'disk_free_gb': 0.5  # Low disk space
+            },
+            'performance_analysis': {
+                'slow_operations': [{'operation': 'slow_op1'}, {'operation': 'slow_op2'}],
+                'error_prone_operations': [{'operation': 'error_op1'}]
+            },
+            'alerts': {
+                'critical_count': 1,
+                'error_count': 2
+            },
+            'error_handler_integration': {
+                'integrated': False
+            }
+        }
+        
+        operation_health = {
+            'degraded_op': {'status': 'degraded'}
+        }
+        
+        recommendations = enhanced_monitor._generate_health_recommendations(diagnostics, operation_health)
+        
+        assert len(recommendations) > 0
+        
+        # Check for specific recommendations
+        rec_text = ' '.join(recommendations)
+        assert 'CPU' in rec_text or 'cpu' in rec_text
+        assert 'memory' in rec_text
+        assert 'disk' in rec_text
+        assert 'slow_op1' in rec_text or 'slow_op2' in rec_text
+        assert 'error_op1' in rec_text
+        assert 'critical' in rec_text
+        assert 'error handler' in rec_text
+
+
+class TestTimerContextManager:
+    """Test cases for the timer context manager."""
+    
+    @pytest.fixture
+    def performance_monitor(self):
+        """Create a PerformanceMonitor instance for testing."""
+        return PerformanceMonitor()
+    
+    def test_timer_context_manager_success(self, performance_monitor):
+        """Test timer context manager with successful operation."""
+        from .monitoring import timer
+        
+        with timer(performance_monitor, "test_operation") as t:
+            time.sleep(0.01)  # Simulate work
+            assert t.success  # Should be True by default
+        
+        # Check that timing was recorded
+        perf_metrics = performance_monitor.metrics_collector.get_performance_metrics()
+        assert "test_operation" in perf_metrics
+        assert perf_metrics["test_operation"].total_calls == 1
+        assert perf_metrics["test_operation"].successful_calls == 1
+        assert perf_metrics["test_operation"].failed_calls == 0
+    
+    def test_timer_context_manager_exception(self, performance_monitor):
+        """Test timer context manager with exception."""
+        from .monitoring import timer
+        
+        with pytest.raises(ValueError):
+            with timer(performance_monitor, "test_operation") as t:
+                time.sleep(0.01)
+                raise ValueError("Test exception")
+        
+        # Check that timing was recorded as failure
+        perf_metrics = performance_monitor.metrics_collector.get_performance_metrics()
+        assert "test_operation" in perf_metrics
+        assert perf_metrics["test_operation"].total_calls == 1
+        assert perf_metrics["test_operation"].successful_calls == 0
+        assert perf_metrics["test_operation"].failed_calls == 1
+
+
+class TestMonitorPerformanceDecorator:
+    """Test cases for the monitor_performance decorator."""
+    
+    @pytest.fixture
+    def performance_monitor(self):
+        """Create a PerformanceMonitor instance for testing."""
+        return PerformanceMonitor()
+    
+    def test_sync_function_decorator(self, performance_monitor):
+        """Test decorator with synchronous function."""
+        from .monitoring import monitor_performance
+        
+        @monitor_performance(performance_monitor, "sync_test")
+        def test_function(x, y):
+            time.sleep(0.01)
+            return x + y
+        
+        result = test_function(2, 3)
+        assert result == 5
+        
+        # Check that timing was recorded
+        perf_metrics = performance_monitor.metrics_collector.get_performance_metrics()
+        assert "sync_test" in perf_metrics
+        assert perf_metrics["sync_test"].total_calls == 1
+        assert perf_metrics["sync_test"].successful_calls == 1
+    
+    @pytest.mark.asyncio
+    async def test_async_function_decorator(self, performance_monitor):
+        """Test decorator with asynchronous function."""
+        from .monitoring import monitor_performance
+        
+        @monitor_performance(performance_monitor, "async_test")
+        async def test_async_function(x, y):
+            await asyncio.sleep(0.01)
+            return x * y
+        
+        result = await test_async_function(3, 4)
+        assert result == 12
+        
+        # Check that timing was recorded
+        perf_metrics = performance_monitor.metrics_collector.get_performance_metrics()
+        assert "async_test" in perf_metrics
+        assert perf_metrics["async_test"].total_calls == 1
+        assert perf_metrics["async_test"].successful_calls == 1
+    
+    def test_decorator_with_exception(self, performance_monitor):
+        """Test decorator behavior with exceptions."""
+        from .monitoring import monitor_performance
+        
+        @monitor_performance(performance_monitor, "exception_test")
+        def failing_function():
+            time.sleep(0.01)
+            raise RuntimeError("Test error")
+        
+        with pytest.raises(RuntimeError):
+            failing_function()
+        
+        # Check that timing was recorded as failure
+        perf_metrics = performance_monitor.metrics_collector.get_performance_metrics()
+        assert "exception_test" in perf_metrics
+        assert perf_metrics["exception_test"].total_calls == 1
+        assert perf_metrics["exception_test"].successful_calls == 0
+        assert perf_metrics["exception_test"].failed_calls == 1
+    
+    def test_decorator_auto_naming(self, performance_monitor):
+        """Test decorator with automatic operation naming."""
+        from .monitoring import monitor_performance
+        
+        @monitor_performance(performance_monitor)  # No operation name provided
+        def auto_named_function():
+            time.sleep(0.01)
+            return "success"
+        
+        result = auto_named_function()
+        assert result == "success"
+        
+        # Check that timing was recorded with auto-generated name
+        perf_metrics = performance_monitor.metrics_collector.get_performance_metrics()
+        
+        # Should have an entry with the module and function name
+        operation_names = list(perf_metrics.keys())
+        assert len(operation_names) == 1
+        assert "auto_named_function" in operation_names[0]

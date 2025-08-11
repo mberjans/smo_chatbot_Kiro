@@ -63,6 +63,48 @@ class LightRAGConfig:
     default_top_k: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_DEFAULT_TOP_K", "10")))
     similarity_threshold: float = field(default_factory=lambda: float(os.getenv("LIGHTRAG_SIMILARITY_THRESHOLD", "0.5")))
     
+    # Caching configuration
+    query_cache_size: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_QUERY_CACHE_SIZE", "1000")))
+    query_cache_memory_mb: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_QUERY_CACHE_MEMORY_MB", "100")))
+    embedding_cache_size: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_EMBEDDING_CACHE_SIZE", "5000")))
+    embedding_cache_memory_mb: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_EMBEDDING_CACHE_MEMORY_MB", "200")))
+    embedding_cache_ttl_seconds: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_EMBEDDING_CACHE_TTL", "86400")))
+    enable_cache_warming: bool = field(default_factory=lambda: os.getenv("LIGHTRAG_ENABLE_CACHE_WARMING", "true").lower() == "true")
+    query_similarity_threshold: float = field(default_factory=lambda: float(os.getenv("LIGHTRAG_QUERY_SIMILARITY_THRESHOLD", "0.9")))
+    
+    # Database connection pooling
+    min_db_connections: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_MIN_DB_CONNECTIONS", "2")))
+    max_db_connections: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_MAX_DB_CONNECTIONS", "10")))
+    db_connection_timeout: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_DB_CONNECTION_TIMEOUT", "30")))
+    
+    # Performance optimization
+    max_memory_mb: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_MAX_MEMORY_MB", "2048")))
+    max_cpu_percent: float = field(default_factory=lambda: float(os.getenv("LIGHTRAG_MAX_CPU_PERCENT", "80.0")))
+    memory_warning_threshold: float = field(default_factory=lambda: float(os.getenv("LIGHTRAG_MEMORY_WARNING_THRESHOLD", "0.8")))
+    memory_critical_threshold: float = field(default_factory=lambda: float(os.getenv("LIGHTRAG_MEMORY_CRITICAL_THRESHOLD", "0.9")))
+    auto_gc_enabled: bool = field(default_factory=lambda: os.getenv("LIGHTRAG_AUTO_GC_ENABLED", "true").lower() == "true")
+    gc_threshold_mb: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_GC_THRESHOLD_MB", "100")))
+    
+    # Task management
+    max_concurrent_tasks: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_MAX_CONCURRENT_TASKS", "50")))
+    task_timeout_seconds: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_TASK_TIMEOUT_SECONDS", "300")))
+    
+    # Performance monitoring
+    performance_monitoring_enabled: bool = field(default_factory=lambda: os.getenv("LIGHTRAG_PERFORMANCE_MONITORING_ENABLED", "true").lower() == "true")
+    performance_monitoring_interval: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_PERFORMANCE_MONITORING_INTERVAL", "30")))
+    auto_optimization_enabled: bool = field(default_factory=lambda: os.getenv("LIGHTRAG_AUTO_OPTIMIZATION_ENABLED", "true").lower() == "true")
+    optimization_interval: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_OPTIMIZATION_INTERVAL", "300")))
+    
+    # Rate limiting and concurrency
+    default_requests_per_minute: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_DEFAULT_REQUESTS_PER_MINUTE", "30")))
+    default_requests_per_hour: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_DEFAULT_REQUESTS_PER_HOUR", "500")))
+    default_burst_limit: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_DEFAULT_BURST_LIMIT", "10")))
+    max_queue_size: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_MAX_QUEUE_SIZE", "1000")))
+    default_request_timeout: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_DEFAULT_REQUEST_TIMEOUT", "300")))
+    max_concurrent_users: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_MAX_CONCURRENT_USERS", "100")))
+    max_requests_per_user: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_MAX_REQUESTS_PER_USER", "5")))
+    queue_workers: int = field(default_factory=lambda: int(os.getenv("LIGHTRAG_QUEUE_WORKERS", "10")))
+    
     def __post_init__(self):
         """Ensure directories exist after initialization and validate configuration."""
         # Create necessary directories

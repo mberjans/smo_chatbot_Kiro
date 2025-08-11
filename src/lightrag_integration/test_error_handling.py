@@ -497,8 +497,12 @@ class TestErrorRecoveryScenarios:
         scenarios = [
             (FileNotFoundError("File not found"), "file_not_found", False),
             (PermissionError("Permission denied"), "permission_denied", False),
-            (Exception("Corrupted PDF"), "corrupted_file", False),
+            (Exception("Corrupted PDF"), "corrupted_file", True),
+            (Exception("Damaged PDF file"), "corrupted_file", True),
             (MemoryError("Out of memory"), "memory_error", True),
+            (Exception("Memory exhausted"), "memory_error", True),
+            (Exception("Timeout processing"), "timeout_error", True),
+            (Exception("Encoding error"), "encoding_error", True),
             (Exception("Generic error"), "generic_error", True)
         ]
         
@@ -509,13 +513,22 @@ class TestErrorRecoveryScenarios:
             assert result["should_retry"] == should_retry
             assert not result["success"]
             assert "message" in result
+            assert "recovery_suggestions" in result
+            assert len(result["recovery_suggestions"]) > 0
     
     def test_knowledge_graph_recovery_scenarios(self, error_handler):
         """Test various knowledge graph error recovery scenarios."""
         scenarios = [
             (Exception("Storage error"), "storage_error", True),
+            (Exception("Disk space full"), "storage_error", True),
             (Exception("Memory exhausted"), "memory_error", True),
-            (Exception("Validation failed"), "validation_error", False),
+            (MemoryError("Out of memory"), "memory_error", True),
+            (Exception("Validation failed"), "validation_error", True),
+            (Exception("Invalid data format"), "validation_error", True),
+            (Exception("Connection lost"), "connection_error", True),
+            (Exception("Network timeout"), "connection_error", True),
+            (Exception("Operation timeout"), "timeout_error", True),
+            (Exception("Duplicate entity exists"), "duplicate_error", True),
             (Exception("Generic KG error"), "generic_kg_error", True)
         ]
         
@@ -526,13 +539,25 @@ class TestErrorRecoveryScenarios:
             assert result["should_retry"] == should_retry
             assert not result["success"]
             assert "message" in result
+            assert "recovery_suggestions" in result
+            assert len(result["recovery_suggestions"]) > 0
     
     def test_query_processing_recovery_scenarios(self, error_handler):
         """Test various query processing error recovery scenarios."""
         scenarios = [
             (Exception("Query timeout"), "timeout_error", True, True),
+            (asyncio.TimeoutError("Async timeout"), "timeout_error", True, True),
             (Exception("Memory error"), "memory_error", True, True),
+            (MemoryError("Out of memory"), "memory_error", True, True),
             (Exception("Knowledge graph not found"), "no_graph_data", False, True),
+            (Exception("Empty knowledge base"), "no_graph_data", False, True),
+            (Exception("Parse error in query"), "query_parse_error", True, True),
+            (Exception("Syntax error"), "query_parse_error", True, True),
+            (Exception("Connection failed"), "connection_error", True, True),
+            (Exception("Network error"), "connection_error", True, True),
+            (Exception("Rate limit exceeded"), "rate_limit_error", True, True),
+            (Exception("Permission denied"), "permission_error", False, True),
+            (Exception("Unauthorized access"), "permission_error", False, True),
             (Exception("Generic query error"), "generic_query_error", True, True)
         ]
         
@@ -544,6 +569,77 @@ class TestErrorRecoveryScenarios:
             assert result["fallback_available"] == fallback_available
             assert not result["success"]
             assert "message" in result
+            assert "recovery_suggestions" in result
+            assert len(result["recovery_suggestions"]) > 0
+    
+    @pytest.mark.asyncio
+    async def test_storage_error_recovery(self, error_handler):
+        """Test storage error recovery mechanisms."""
+        # Mock config for testing
+        error_handler.config = type('Config', (), {'cache_directory': '/tmp'})()
+        
+        result = await error_handler.recover_from_storage_error("test_operation")
+        
+        assert "recovery_actions" in result
+        assert isinstance(result["recovery_actions"], list)
+        assert "message" in result
+        assert "can_retry" in result
+    
+    @pytest.mark.asyncio
+    async def test_memory_error_recovery(self, error_handler):
+        """Test memory error recovery mechanisms."""
+        context_data = {"batch_size": 100, "chunk_size": 1000}
+        
+        result = await error_handler.recover_from_memory_error("test_operation", context_data)
+        
+        assert "recovery_actions" in result
+        assert isinstance(result["recovery_actions"], list)
+        assert "suggested_params" in result
+        assert result["suggested_params"]["batch_size"] == 50  # Half of original
+        assert result["suggested_params"]["chunk_size"] == 500  # Half of original
+    
+    @pytest.mark.asyncio
+    async def test_connection_error_recovery(self, error_handler):
+        """Test connection error recovery mechanisms."""
+        result = await error_handler.recover_from_connection_error("test_operation")
+        
+        assert "recovery_actions" in result
+        assert isinstance(result["recovery_actions"], list)
+        assert "message" in result
+        assert "can_retry" in result
+        if result["can_retry"]:
+            assert "retry_delay" in result
+    
+    def test_recovery_recommendations(self, error_handler):
+        """Test recovery recommendation generation."""
+        # Test PDF processing recommendations
+        pdf_recs = error_handler.get_recovery_recommendations(ErrorCategory.PDF_PROCESSING, 1)
+        assert len(pdf_recs) >= 4
+        assert any("PDF" in rec for rec in pdf_recs)
+        
+        # Test with high error count
+        pdf_recs_high = error_handler.get_recovery_recommendations(ErrorCategory.PDF_PROCESSING, 5)
+        assert len(pdf_recs_high) > len(pdf_recs)
+        
+        # Test knowledge graph recommendations
+        kg_recs = error_handler.get_recovery_recommendations(ErrorCategory.KNOWLEDGE_GRAPH, 1)
+        assert len(kg_recs) >= 4
+        assert any("database" in rec.lower() for rec in kg_recs)
+        
+        # Test query processing recommendations
+        query_recs = error_handler.get_recovery_recommendations(ErrorCategory.QUERY_PROCESSING, 1)
+        assert len(query_recs) >= 4
+        assert any("query" in rec.lower() for rec in query_recs)
+        
+        # Test network recommendations
+        network_recs = error_handler.get_recovery_recommendations(ErrorCategory.NETWORK, 1)
+        assert len(network_recs) >= 4
+        assert any("network" in rec.lower() for rec in network_recs)
+        
+        # Test storage recommendations
+        storage_recs = error_handler.get_recovery_recommendations(ErrorCategory.STORAGE, 1)
+        assert len(storage_recs) >= 4
+        assert any("disk" in rec.lower() or "storage" in rec.lower() for rec in storage_recs)
 
 
 if __name__ == "__main__":

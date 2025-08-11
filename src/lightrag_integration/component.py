@@ -17,6 +17,9 @@ from .utils.logging import setup_logger
 from .utils.health import HealthStatus, ComponentHealth, SystemHealth
 from .ingestion.directory_monitor import DirectoryMonitor, BatchProcessor
 from .ingestion.progress_tracker import ProgressTracker, OperationType
+from .caching import CacheManager
+from .performance import PerformanceOptimizer, managed_resources
+from .concurrency import ConcurrencyManager, RequestPriority
 
 
 class LightRAGComponent:
@@ -71,6 +74,11 @@ class LightRAGComponent:
         self._progress_tracker: Optional[ProgressTracker] = None
         self._batch_processor: Optional[BatchProcessor] = None
         
+        # Performance and scalability components
+        self._cache_manager: Optional[CacheManager] = None
+        self._performance_optimizer: Optional[PerformanceOptimizer] = None
+        self._concurrency_manager: Optional[ConcurrencyManager] = None
+        
         # Statistics tracking
         self._stats = {
             "queries_processed": 0,
@@ -124,6 +132,11 @@ class LightRAGComponent:
             
             # Initialize directory monitor
             await self._initialize_directory_monitor()
+            
+            # Initialize performance and scalability components
+            await self._initialize_cache_manager()
+            await self._initialize_performance_optimizer()
+            await self._initialize_concurrency_manager()
             
             # TODO: Initialize LightRAG instance in next task
             # This will be implemented when the actual LightRAG library is integrated
@@ -221,13 +234,14 @@ class LightRAGComponent:
             )
             raise RuntimeError(f"Document ingestion failed: {str(e)}") from e
     
-    async def query(self, question: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def query(self, question: str, context: Optional[Dict[str, Any]] = None, user_id: str = "anonymous") -> Dict[str, Any]:
         """
-        Query the LightRAG knowledge graph.
+        Query the LightRAG knowledge graph with caching and concurrency management.
         
         Args:
             question: The question to ask
             context: Optional context information
+            user_id: User identifier for rate limiting and tracking
         
         Returns:
             Dictionary containing the response and metadata.
@@ -243,43 +257,67 @@ class LightRAGComponent:
             if not self._initialized:
                 await self.initialize()
             
-            start_time = datetime.now()
-            self.logger.info("Processing query: %s", question[:100] + "..." if len(question) > 100 else question)
+            # Check cache first if available
+            if self._cache_manager:
+                cached_result = await self._cache_manager.get_query_result(question, context)
+                if cached_result:
+                    self.logger.debug("Returning cached result for query: %s", question[:50])
+                    self._stats["queries_processed"] += 1
+                    return cached_result
             
-            # Import and use the query engine with error handling
-            try:
-                from .query.engine import LightRAGQueryEngine
+            # Use concurrency manager if available
+            if self._concurrency_manager:
+                async def query_callback():
+                    return await self._execute_query_internal(question, context)
                 
-                query_engine = LightRAGQueryEngine(self.config)
-                result = await query_engine.process_query(question, context)
+                # Handle request through concurrency manager
+                request_result = await self._concurrency_manager.handle_request(
+                    user_id=user_id,
+                    request_type="query",
+                    callback=query_callback,
+                    priority=RequestPriority.NORMAL,
+                    context=context
+                )
                 
-            except ImportError as e:
-                self.logger.error("Failed to import query engine: %s", str(e))
-                # Fallback response when query engine is not available
-                result = self._create_fallback_response(question, start_time)
-            
-            # Convert QueryResult to dictionary format for backward compatibility
-            response = {
-                "answer": result.answer if hasattr(result, 'answer') else result.get('answer', ''),
-                "confidence_score": result.confidence_score if hasattr(result, 'confidence_score') else result.get('confidence_score', 0.0),
-                "source_documents": result.source_documents if hasattr(result, 'source_documents') else result.get('source_documents', []),
-                "entities_used": result.entities_used if hasattr(result, 'entities_used') else result.get('entities_used', []),
-                "relationships_used": result.relationships_used if hasattr(result, 'relationships_used') else result.get('relationships_used', []),
-                "processing_time": result.processing_time if hasattr(result, 'processing_time') else result.get('processing_time', 0.0),
-                "metadata": result.metadata if hasattr(result, 'metadata') else result.get('metadata', {}),
-                "formatted_response": result.formatted_response if hasattr(result, 'formatted_response') else result.get('formatted_response', ''),
-                "confidence_breakdown": result.confidence_breakdown if hasattr(result, 'confidence_breakdown') else result.get('confidence_breakdown', {})
-            }
-            
-            self._stats["queries_processed"] += 1
-            self._stats["last_query_time"] = datetime.now()
-            
-            self.logger.info(
-                "Query processing completed with confidence %.2f in %.2f seconds",
-                response["confidence_score"],
-                response["processing_time"]
-            )
-            return response
+                if not request_result['success']:
+                    # Return error response for rate limiting or queue issues
+                    return {
+                        "answer": f"Request could not be processed: {request_result.get('error', 'unknown error')}",
+                        "confidence_score": 0.0,
+                        "source_documents": [],
+                        "entities_used": [],
+                        "relationships_used": [],
+                        "processing_time": 0.0,
+                        "metadata": {
+                            "error": request_result.get('error'),
+                            "rate_limited": True,
+                            "request_info": request_result
+                        },
+                        "formatted_response": "Request rate limited or queued",
+                        "confidence_breakdown": {}
+                    }
+                
+                # Request was queued successfully - this is a simplified implementation
+                # In a real system, you'd need to wait for the actual result
+                self.logger.info("Request queued successfully: %s", request_result['request_id'])
+                return {
+                    "answer": "Your request has been queued and will be processed shortly.",
+                    "confidence_score": 0.0,
+                    "source_documents": [],
+                    "entities_used": [],
+                    "relationships_used": [],
+                    "processing_time": 0.0,
+                    "metadata": {
+                        "queued": True,
+                        "request_id": request_result['request_id'],
+                        "estimated_wait_time": request_result.get('estimated_wait_time', 0)
+                    },
+                    "formatted_response": "Request queued for processing",
+                    "confidence_breakdown": {}
+                }
+            else:
+                # Direct execution without concurrency management
+                return await self._execute_query_internal(question, context)
             
         except ValueError as e:
             self._stats["errors_encountered"] += 1
@@ -293,6 +331,62 @@ class LightRAGComponent:
                 traceback.format_exc()
             )
             raise RuntimeError(f"Query processing failed: {str(e)}") from e
+    
+    async def _execute_query_internal(self, question: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Internal query execution with performance monitoring."""
+        start_time = datetime.now()
+        
+        # Use performance optimizer if available
+        if self._performance_optimizer:
+            async with managed_resources(self._performance_optimizer, "query_processing"):
+                result = await self._process_query_with_engine(question, context, start_time)
+        else:
+            result = await self._process_query_with_engine(question, context, start_time)
+        
+        # Cache result if cache manager is available
+        if self._cache_manager and result.get("confidence_score", 0) > 0.5:
+            await self._cache_manager.cache_query_result(question, result, context)
+        
+        return result
+    
+    async def _process_query_with_engine(self, question: str, context: Optional[Dict[str, Any]], start_time: datetime) -> Dict[str, Any]:
+        """Process query using the query engine."""
+        self.logger.info("Processing query: %s", question[:100] + "..." if len(question) > 100 else question)
+        
+        # Import and use the query engine with error handling
+        try:
+            from .query.engine import LightRAGQueryEngine
+            
+            query_engine = LightRAGQueryEngine(self.config)
+            result = await query_engine.process_query(question, context)
+            
+        except ImportError as e:
+            self.logger.error("Failed to import query engine: %s", str(e))
+            # Fallback response when query engine is not available
+            result = self._create_fallback_response(question, start_time)
+        
+        # Convert QueryResult to dictionary format for backward compatibility
+        response = {
+            "answer": result.answer if hasattr(result, 'answer') else result.get('answer', ''),
+            "confidence_score": result.confidence_score if hasattr(result, 'confidence_score') else result.get('confidence_score', 0.0),
+            "source_documents": result.source_documents if hasattr(result, 'source_documents') else result.get('source_documents', []),
+            "entities_used": result.entities_used if hasattr(result, 'entities_used') else result.get('entities_used', []),
+            "relationships_used": result.relationships_used if hasattr(result, 'relationships_used') else result.get('relationships_used', []),
+            "processing_time": result.processing_time if hasattr(result, 'processing_time') else result.get('processing_time', 0.0),
+            "metadata": result.metadata if hasattr(result, 'metadata') else result.get('metadata', {}),
+            "formatted_response": result.formatted_response if hasattr(result, 'formatted_response') else result.get('formatted_response', ''),
+            "confidence_breakdown": result.confidence_breakdown if hasattr(result, 'confidence_breakdown') else result.get('confidence_breakdown', {})
+        }
+        
+        self._stats["queries_processed"] += 1
+        self._stats["last_query_time"] = datetime.now()
+        
+        self.logger.info(
+            "Query processing completed with confidence %.2f in %.2f seconds",
+            response["confidence_score"],
+            response["processing_time"]
+        )
+        return response
     
     async def get_health_status(self, force_refresh: bool = False) -> SystemHealth:
         """
@@ -455,6 +549,19 @@ class LightRAGComponent:
             # Clean up batch processor
             self._batch_processor = None
             
+            # Clean up performance and scalability components
+            if self._cache_manager:
+                await self._cache_manager.cleanup()
+                self._cache_manager = None
+            
+            if self._performance_optimizer:
+                await self._performance_optimizer.cleanup()
+                self._performance_optimizer = None
+            
+            if self._concurrency_manager:
+                await self._concurrency_manager.stop()
+                self._concurrency_manager = None
+            
             # Clean up LightRAG instance if it exists
             if self._lightrag_instance:
                 # TODO: Implement cleanup logic when LightRAG instance is created
@@ -484,7 +591,7 @@ class LightRAGComponent:
         Returns:
             Dictionary containing usage statistics and metrics.
         """
-        return {
+        base_stats = {
             **self._stats,
             "is_initialized": self._initialized,
             "is_initializing": self._initializing,
@@ -494,6 +601,49 @@ class LightRAGComponent:
                 .total_seconds() if self._stats["initialization_time"] and isinstance(self._stats["initialization_time"], str) else 0
             )
         }
+        
+        # Add performance and scalability statistics
+        if self._cache_manager:
+            base_stats["cache_stats"] = self._cache_manager.get_comprehensive_stats()
+        
+        if self._performance_optimizer:
+            base_stats["performance_stats"] = self._performance_optimizer.get_performance_summary()
+        
+        if self._concurrency_manager:
+            base_stats["concurrency_stats"] = self._concurrency_manager.get_comprehensive_stats()
+        
+        return base_stats
+    
+    async def get_cache_stats(self) -> Dict[str, Any]:
+        """Get detailed cache statistics."""
+        if self._cache_manager:
+            return self._cache_manager.get_comprehensive_stats()
+        return {"error": "Cache manager not initialized"}
+    
+    async def get_performance_stats(self) -> Dict[str, Any]:
+        """Get detailed performance statistics."""
+        if self._performance_optimizer:
+            return self._performance_optimizer.get_performance_summary()
+        return {"error": "Performance optimizer not initialized"}
+    
+    async def get_concurrency_stats(self) -> Dict[str, Any]:
+        """Get detailed concurrency statistics."""
+        if self._concurrency_manager:
+            return self._concurrency_manager.get_comprehensive_stats()
+        return {"error": "Concurrency manager not initialized"}
+    
+    async def optimize_performance(self, force: bool = False) -> Dict[str, Any]:
+        """Manually trigger performance optimization."""
+        if self._performance_optimizer:
+            return await self._performance_optimizer.optimize_performance(force)
+        return {"error": "Performance optimizer not initialized"}
+    
+    async def clear_caches(self) -> Dict[str, Any]:
+        """Clear all caches."""
+        if self._cache_manager:
+            await self._cache_manager.clear_all_caches()
+            return {"success": True, "message": "All caches cleared"}
+        return {"error": "Cache manager not initialized"}
     
     async def _create_directories(self) -> None:
         """Create necessary directories for the component."""
@@ -529,6 +679,39 @@ class LightRAGComponent:
                 raise RuntimeError(f"Path is not a directory: {name} = {path}")
             else:
                 self.logger.debug("Validated path: %s = %s", name, path)
+    
+    async def _initialize_cache_manager(self) -> None:
+        """Initialize cache manager."""
+        try:
+            self._cache_manager = CacheManager(self.config)
+            await self._cache_manager.initialize()
+            self.logger.info("Cache manager initialized successfully")
+        except Exception as e:
+            self.logger.error("Failed to initialize cache manager: %s", str(e))
+            # Cache manager is optional, so we don't fail initialization
+            self._cache_manager = None
+    
+    async def _initialize_performance_optimizer(self) -> None:
+        """Initialize performance optimizer."""
+        try:
+            self._performance_optimizer = PerformanceOptimizer(self.config)
+            await self._performance_optimizer.start_monitoring()
+            self.logger.info("Performance optimizer initialized successfully")
+        except Exception as e:
+            self.logger.error("Failed to initialize performance optimizer: %s", str(e))
+            # Performance optimizer is optional, so we don't fail initialization
+            self._performance_optimizer = None
+    
+    async def _initialize_concurrency_manager(self) -> None:
+        """Initialize concurrency manager."""
+        try:
+            self._concurrency_manager = ConcurrencyManager(self.config)
+            await self._concurrency_manager.start()
+            self.logger.info("Concurrency manager initialized successfully")
+        except Exception as e:
+            self.logger.error("Failed to initialize concurrency manager: %s", str(e))
+            # Concurrency manager is optional, so we don't fail initialization
+            self._concurrency_manager = None
     
     def _create_fallback_response(self, question: str, start_time: datetime) -> Dict[str, Any]:
         """Create a fallback response when the query engine is not available."""

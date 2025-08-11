@@ -929,3 +929,511 @@ def file_alert_handler(alert: Alert, alert_file: str = "alerts.log") -> None:
     except Exception as e:
         logger = logging.getLogger("alert_handler")
         logger.error(f"Failed to write alert to file {alert_file}: {str(e)}")
+
+
+# Additional monitoring functionality for enhanced error handling integration
+
+class EnhancedPerformanceMonitor(PerformanceMonitor):
+    """
+    Enhanced performance monitor with better error handling integration.
+    
+    This extends the base PerformanceMonitor with additional functionality
+    for error tracking, health monitoring, and system diagnostics.
+    """
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        """Initialize the enhanced performance monitor."""
+        super().__init__(config)
+        self._error_handler = None
+        self._health_check_interval = self.config.get('health_check_interval', 60)
+        self._last_health_check = None
+        
+        # Additional metrics for error tracking
+        self._error_rate_threshold = self.config.get('error_rate_threshold', 5.0)  # 5% error rate
+        self._response_time_threshold = self.config.get('response_time_threshold', 2.0)  # 2 seconds
+        
+        self.logger.info("Enhanced performance monitor initialized")
+    
+    def get_operation_metrics(self, operation_name: str) -> Optional[Dict[str, Any]]:
+        """Get detailed metrics for a specific operation."""
+        performance_metrics = self.metrics_collector.get_performance_metrics()
+        
+        if operation_name not in performance_metrics:
+            return None
+        
+        pm = performance_metrics[operation_name]
+        
+        return {
+            'operation_name': pm.operation_name,
+            'total_calls': pm.total_calls,
+            'successful_calls': pm.successful_calls,
+            'failed_calls': pm.failed_calls,
+            'success_rate_percent': round((pm.successful_calls / max(pm.total_calls, 1)) * 100, 2),
+            'error_rate_percent': round((pm.failed_calls / max(pm.total_calls, 1)) * 100, 2),
+            'avg_duration_ms': round(pm.avg_duration * 1000, 2),
+            'min_duration_ms': round(pm.min_duration * 1000, 2),
+            'max_duration_ms': round(pm.max_duration * 1000, 2),
+            'p95_duration_ms': round(pm.p95_duration * 1000, 2),
+            'p99_duration_ms': round(pm.p99_duration * 1000, 2),
+            'last_updated': pm.last_updated.isoformat()
+        }
+    
+    def export_metrics(self, format_type: str = "json") -> str:
+        """Export metrics in the specified format."""
+        if format_type.lower() != "json":
+            raise ValueError(f"Unsupported export format: {format_type}")
+        
+        summary = self.get_performance_summary()
+        return json.dumps(summary, indent=2)
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get overall system health status."""
+        system_metrics = self.metrics_collector.collect_system_metrics()
+        active_alerts = self.alert_manager.get_active_alerts()
+        critical_alerts = [a for a in active_alerts if a.severity == AlertSeverity.CRITICAL]
+        error_alerts = [a for a in active_alerts if a.severity == AlertSeverity.ERROR]
+        
+        # Determine overall health
+        if critical_alerts:
+            health_status = "critical"
+        elif error_alerts:
+            health_status = "degraded"
+        elif len(active_alerts) > 0:
+            health_status = "warning"
+        else:
+            health_status = "healthy"
+        
+        return {
+            'status': health_status,
+            'timestamp': datetime.now().isoformat(),
+            'system_metrics': {
+                'cpu_usage_percent': system_metrics.cpu_usage_percent,
+                'memory_usage_percent': system_metrics.memory_usage_percent,
+                'disk_usage_percent': system_metrics.disk_usage_percent,
+                'active_threads': system_metrics.active_threads
+            },
+            'alerts': {
+                'total': len(active_alerts),
+                'critical': len(critical_alerts),
+                'error': len(error_alerts),
+                'warning': len([a for a in active_alerts if a.severity == AlertSeverity.WARNING])
+            },
+            'monitoring_active': self.monitoring_active
+        }
+    
+    def integrate_with_error_handler(self, error_handler) -> None:
+        """Integrate monitoring with error handling system."""
+        self._error_handler = error_handler
+        
+        # Add error handler metrics to monitoring
+        def track_error_metrics():
+            if not self._error_handler:
+                return
+                
+            error_stats = self._error_handler.get_error_statistics()
+            
+            # Set gauges for error counts
+            self.set_metric("errors_total", error_stats["total_errors"])
+            self.set_metric("errors_recent_1h", error_stats["recent_errors_1h"])
+            self.set_metric("errors_recent_24h", error_stats["recent_errors_24h"])
+            
+            # Set gauges for error categories
+            for category, count in error_stats["errors_by_category"].items():
+                self.set_metric(f"errors_by_category_{category}", count)
+            
+            # Set gauges for error severity
+            for severity, count in error_stats["errors_by_severity"].items():
+                self.set_metric(f"errors_by_severity_{severity}", count)
+            
+            # Create alerts for high error rates
+            if error_stats["recent_errors_1h"] > 10:  # More than 10 errors in last hour
+                self.alert_manager.create_alert(
+                    severity=AlertSeverity.WARNING,
+                    title="High Error Rate",
+                    message=f"High error rate detected: {error_stats['recent_errors_1h']} errors in the last hour",
+                    component="error_handler",
+                    metric_name="errors_recent_1h",
+                    metric_value=error_stats["recent_errors_1h"],
+                    threshold=10
+                )
+            
+            # Create alerts for circuit breakers
+            if error_stats["circuit_breakers_open"] > 0:
+                self.alert_manager.create_alert(
+                    severity=AlertSeverity.ERROR,
+                    title="Circuit Breakers Open",
+                    message=f"{error_stats['circuit_breakers_open']} circuit breakers are currently open",
+                    component="error_handler",
+                    metric_name="circuit_breakers_open",
+                    metric_value=error_stats["circuit_breakers_open"],
+                    threshold=0
+                )
+        
+        # Schedule periodic error metrics tracking
+        self._error_metrics_tracker = track_error_metrics
+        
+        self.logger.info("Integrated monitoring with error handler")
+    
+    def check_operation_health(self, operation_name: str) -> Dict[str, Any]:
+        """Check the health of a specific operation."""
+        metrics = self.get_operation_metrics(operation_name)
+        
+        if not metrics:
+            return {
+                'operation_name': operation_name,
+                'status': 'unknown',
+                'message': 'No metrics available for this operation'
+            }
+        
+        # Check error rate
+        error_rate = metrics['error_rate_percent']
+        avg_duration_ms = metrics['avg_duration_ms']
+        
+        issues = []
+        status = 'healthy'
+        
+        if error_rate > self._error_rate_threshold:
+            issues.append(f"High error rate: {error_rate}%")
+            status = 'degraded'
+        
+        if avg_duration_ms > (self._response_time_threshold * 1000):
+            issues.append(f"Slow response time: {avg_duration_ms}ms")
+            if status == 'healthy':
+                status = 'degraded'
+        
+        if metrics['total_calls'] == 0:
+            issues.append("No recent activity")
+            status = 'inactive'
+        
+        return {
+            'operation_name': operation_name,
+            'status': status,
+            'error_rate_percent': error_rate,
+            'avg_duration_ms': avg_duration_ms,
+            'total_calls': metrics['total_calls'],
+            'issues': issues,
+            'message': '; '.join(issues) if issues else 'Operation is healthy'
+        }
+    
+    def get_system_diagnostics(self) -> Dict[str, Any]:
+        """Get comprehensive system diagnostics."""
+        system_metrics = self.metrics_collector.collect_system_metrics()
+        performance_metrics = self.metrics_collector.get_performance_metrics()
+        active_alerts = self.alert_manager.get_active_alerts()
+        
+        # Analyze performance trends
+        slow_operations = []
+        error_prone_operations = []
+        
+        for name, pm in performance_metrics.items():
+            if pm.avg_duration > self._response_time_threshold:
+                slow_operations.append({
+                    'operation': name,
+                    'avg_duration_ms': round(pm.avg_duration * 1000, 2)
+                })
+            
+            error_rate = (pm.failed_calls / max(pm.total_calls, 1)) * 100
+            if error_rate > self._error_rate_threshold:
+                error_prone_operations.append({
+                    'operation': name,
+                    'error_rate_percent': round(error_rate, 2),
+                    'failed_calls': pm.failed_calls,
+                    'total_calls': pm.total_calls
+                })
+        
+        # System resource analysis
+        resource_warnings = []
+        if system_metrics.cpu_usage_percent > 80:
+            resource_warnings.append(f"High CPU usage: {system_metrics.cpu_usage_percent}%")
+        if system_metrics.memory_usage_percent > 85:
+            resource_warnings.append(f"High memory usage: {system_metrics.memory_usage_percent}%")
+        if system_metrics.disk_usage_percent > 90:
+            resource_warnings.append(f"High disk usage: {system_metrics.disk_usage_percent}%")
+        
+        return {
+            'timestamp': datetime.now().isoformat(),
+            'system_health': {
+                'cpu_usage_percent': system_metrics.cpu_usage_percent,
+                'memory_usage_percent': system_metrics.memory_usage_percent,
+                'disk_usage_percent': system_metrics.disk_usage_percent,
+                'disk_free_gb': system_metrics.disk_free_gb,
+                'active_threads': system_metrics.active_threads,
+                'open_files': system_metrics.open_files,
+                'resource_warnings': resource_warnings
+            },
+            'performance_analysis': {
+                'total_operations': len(performance_metrics),
+                'slow_operations': sorted(slow_operations, key=lambda x: x['avg_duration_ms'], reverse=True)[:5],
+                'error_prone_operations': sorted(error_prone_operations, key=lambda x: x['error_rate_percent'], reverse=True)[:5]
+            },
+            'alerts': {
+                'active_count': len(active_alerts),
+                'critical_count': len([a for a in active_alerts if a.severity == AlertSeverity.CRITICAL]),
+                'error_count': len([a for a in active_alerts if a.severity == AlertSeverity.ERROR]),
+                'warning_count': len([a for a in active_alerts if a.severity == AlertSeverity.WARNING])
+            },
+            'error_handler_integration': {
+                'integrated': self._error_handler is not None,
+                'error_metrics_available': hasattr(self, '_error_metrics_tracker')
+            }
+        }
+    
+    async def run_health_check(self) -> Dict[str, Any]:
+        """Run a comprehensive health check."""
+        self.logger.info("Running comprehensive health check")
+        
+        try:
+            # Collect current metrics
+            system_metrics = self.metrics_collector.collect_system_metrics()
+            performance_metrics = self.metrics_collector.get_performance_metrics()
+            
+            # Check each operation
+            operation_health = {}
+            for operation_name in performance_metrics.keys():
+                operation_health[operation_name] = self.check_operation_health(operation_name)
+            
+            # Get system diagnostics
+            diagnostics = self.get_system_diagnostics()
+            
+            # Determine overall health
+            unhealthy_operations = [name for name, health in operation_health.items() 
+                                  if health['status'] in ['degraded', 'critical']]
+            
+            if diagnostics['alerts']['critical_count'] > 0:
+                overall_status = 'critical'
+            elif diagnostics['alerts']['error_count'] > 0 or unhealthy_operations:
+                overall_status = 'degraded'
+            elif diagnostics['alerts']['warning_count'] > 0:
+                overall_status = 'warning'
+            else:
+                overall_status = 'healthy'
+            
+            health_report = {
+                'overall_status': overall_status,
+                'timestamp': datetime.now().isoformat(),
+                'system_diagnostics': diagnostics,
+                'operation_health': operation_health,
+                'recommendations': self._generate_health_recommendations(diagnostics, operation_health)
+            }
+            
+            self._last_health_check = datetime.now()
+            
+            # Record health check metrics
+            self.increment_counter("health_checks_completed")
+            self.set_metric("last_health_check_timestamp", int(self._last_health_check.timestamp()))
+            
+            return health_report
+            
+        except Exception as e:
+            self.logger.error(f"Health check failed: {str(e)}")
+            self.increment_counter("health_checks_failed")
+            
+            return {
+                'overall_status': 'unknown',
+                'timestamp': datetime.now().isoformat(),
+                'error': str(e),
+                'recommendations': ['Check system logs for health check errors']
+            }
+    
+    def _generate_health_recommendations(self, diagnostics: Dict[str, Any], 
+                                       operation_health: Dict[str, Any]) -> List[str]:
+        """Generate health recommendations based on diagnostics."""
+        recommendations = []
+        
+        # System resource recommendations
+        system_health = diagnostics['system_health']
+        if system_health['cpu_usage_percent'] > 80:
+            recommendations.append("Consider scaling CPU resources or optimizing high-CPU operations")
+        
+        if system_health['memory_usage_percent'] > 85:
+            recommendations.append("Monitor memory usage and consider increasing available memory")
+        
+        if system_health['disk_usage_percent'] > 90:
+            recommendations.append("Clean up disk space or increase storage capacity")
+        
+        if system_health['disk_free_gb'] < 1:
+            recommendations.append("Critical: Very low disk space - immediate cleanup required")
+        
+        # Performance recommendations
+        perf_analysis = diagnostics['performance_analysis']
+        if perf_analysis['slow_operations']:
+            slow_ops = [op['operation'] for op in perf_analysis['slow_operations'][:3]]
+            recommendations.append(f"Optimize slow operations: {', '.join(slow_ops)}")
+        
+        if perf_analysis['error_prone_operations']:
+            error_ops = [op['operation'] for op in perf_analysis['error_prone_operations'][:3]]
+            recommendations.append(f"Investigate high error rates in: {', '.join(error_ops)}")
+        
+        # Alert recommendations
+        alerts = diagnostics['alerts']
+        if alerts['critical_count'] > 0:
+            recommendations.append("Address critical alerts immediately")
+        
+        if alerts['error_count'] > 0:
+            recommendations.append("Review and resolve error-level alerts")
+        
+        # Operation-specific recommendations
+        degraded_ops = [name for name, health in operation_health.items() 
+                       if health['status'] == 'degraded']
+        if degraded_ops:
+            recommendations.append(f"Monitor degraded operations: {', '.join(degraded_ops[:3])}")
+        
+        # Error handler integration recommendations
+        if not diagnostics['error_handler_integration']['integrated']:
+            recommendations.append("Consider integrating with error handler for better error tracking")
+        
+        return recommendations
+    
+    async def _monitoring_loop(self) -> None:
+        """Enhanced monitoring loop with health checks."""
+        self.logger.info("Starting enhanced monitoring loop")
+        
+        health_check_counter = 0
+        health_check_interval_iterations = max(1, int(self._health_check_interval / self.monitoring_interval))
+        
+        try:
+            while self.monitoring_active:
+                try:
+                    # Run standard monitoring
+                    await super()._monitoring_loop_iteration()
+                    
+                    # Run periodic health checks
+                    health_check_counter += 1
+                    if health_check_counter >= health_check_interval_iterations:
+                        health_report = await self.run_health_check()
+                        self.logger.info(f"Health check completed - Status: {health_report['overall_status']}")
+                        health_check_counter = 0
+                    
+                    # Track error metrics if integrated
+                    if hasattr(self, '_error_metrics_tracker'):
+                        try:
+                            self._error_metrics_tracker()
+                        except Exception as e:
+                            self.logger.error(f"Error tracking error metrics: {str(e)}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error in enhanced monitoring loop: {str(e)}")
+                    self.increment_counter("monitoring_loop_errors")
+                
+                # Wait for next iteration
+                await asyncio.sleep(self.monitoring_interval)
+                
+        except asyncio.CancelledError:
+            self.logger.info("Enhanced monitoring loop cancelled")
+            raise
+        except Exception as e:
+            self.logger.error(f"Enhanced monitoring loop failed: {str(e)}")
+        finally:
+            self.logger.info("Enhanced monitoring loop ended")
+    
+    async def _monitoring_loop_iteration(self) -> None:
+        """Single iteration of the monitoring loop."""
+        # Collect system metrics
+        system_metrics = self.metrics_collector.collect_system_metrics()
+        
+        # Check system thresholds
+        system_alerts = self.alert_manager.check_system_thresholds(system_metrics)
+        if system_alerts:
+            self.logger.info(f"Generated {len(system_alerts)} system alerts")
+        
+        # Check performance thresholds
+        performance_metrics = self.metrics_collector.get_performance_metrics()
+        for perf_metrics in performance_metrics.values():
+            perf_alerts = self.alert_manager.check_performance_thresholds(perf_metrics)
+            if perf_alerts:
+                self.logger.info(f"Generated {len(perf_alerts)} performance alerts for {perf_metrics.operation_name}")
+        
+        # Check current metrics thresholds
+        current_metrics = self.metrics_collector.get_current_metrics()
+        for metric in current_metrics.values():
+            metric_alerts = self.alert_manager.check_metric_thresholds(metric)
+            if metric_alerts:
+                self.logger.info(f"Generated {len(metric_alerts)} metric alerts for {metric.name}")
+        
+        # Update monitoring metrics
+        self.increment_counter("monitoring_loop_iterations")
+
+
+# Context managers and decorators for easier monitoring integration
+
+class timer:
+    """Context manager for timing operations."""
+    
+    def __init__(self, performance_monitor: PerformanceMonitor, operation_name: str):
+        """Initialize the timer context manager."""
+        self.performance_monitor = performance_monitor
+        self.operation_name = operation_name
+        self.start_time = None
+        self.success = True
+    
+    def __enter__(self):
+        """Start timing."""
+        self.start_time = time.time()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """End timing and record metrics."""
+        if self.start_time is not None:
+            duration = time.time() - self.start_time
+            success = exc_type is None and self.success
+            self.performance_monitor.record_operation(self.operation_name, duration, success)
+        
+        # Don't suppress exceptions
+        return False
+
+
+def monitor_performance(performance_monitor: PerformanceMonitor, operation_name: str = None):
+    """Decorator for monitoring function performance."""
+    def decorator(func):
+        nonlocal operation_name
+        if operation_name is None:
+            operation_name = f"{func.__module__}.{func.__name__}"
+        
+        if asyncio.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                start_time = time.time()
+                success = True
+                try:
+                    result = await func(*args, **kwargs)
+                    return result
+                except Exception:
+                    success = False
+                    raise
+                finally:
+                    duration = time.time() - start_time
+                    performance_monitor.record_operation(operation_name, duration, success)
+            
+            return async_wrapper
+        else:
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                start_time = time.time()
+                success = True
+                try:
+                    result = func(*args, **kwargs)
+                    return result
+                except Exception:
+                    success = False
+                    raise
+                finally:
+                    duration = time.time() - start_time
+                    performance_monitor.record_operation(operation_name, duration, success)
+            
+            return sync_wrapper
+    
+    return decorator
+
+
+# Import functools for the decorator
+import functools
+
+# Alias for backward compatibility
+class SystemMonitor:
+    """Alias for EnhancedPerformanceMonitor for backward compatibility."""
+    
+    def __init__(self, config=None):
+        self._monitor = EnhancedPerformanceMonitor()
+    
+    def __getattr__(self, name):
+        return getattr(self._monitor, name)

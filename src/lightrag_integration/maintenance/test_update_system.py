@@ -12,6 +12,7 @@ import asyncio
 import json
 import tempfile
 import pytest
+import pytest_asyncio
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -42,13 +43,13 @@ class LightRAGError(Exception):
 class TestKnowledgeBaseUpdater:
     """Test suite for KnowledgeBaseUpdater."""
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def temp_dir(self):
         """Create temporary directory for testing."""
         with tempfile.TemporaryDirectory() as temp_dir:
             yield Path(temp_dir)
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def mock_ingestion_pipeline(self):
         """Mock ingestion pipeline."""
         pipeline = AsyncMock(spec=PDFIngestionPipeline)
@@ -59,7 +60,7 @@ class TestKnowledgeBaseUpdater:
         }
         return pipeline
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def mock_version_manager(self):
         """Mock version manager."""
         manager = AsyncMock(spec=VersionManager)
@@ -74,13 +75,13 @@ class TestKnowledgeBaseUpdater:
         )
         return manager
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def mock_error_handler(self):
         """Mock error handler."""
         handler = AsyncMock(spec=ErrorHandler)
         return handler
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def updater(self, temp_dir, mock_ingestion_pipeline, mock_version_manager, mock_error_handler):
         """Create KnowledgeBaseUpdater instance for testing."""
         metadata_file = temp_dir / "metadata.json"
@@ -100,6 +101,7 @@ class TestKnowledgeBaseUpdater:
         await updater.initialize()
         return updater
     
+    @pytest.mark.asyncio
     async def test_initialization(self, updater, temp_dir):
         """Test updater initialization."""
         # Check metadata file was created
@@ -109,6 +111,7 @@ class TestKnowledgeBaseUpdater:
         # Check version manager was initialized
         updater.version_manager.initialize.assert_called_once()
     
+    @pytest.mark.asyncio
     async def test_scan_for_updates_new_files(self, updater, temp_dir):
         """Test scanning for new files."""
         # Create a test PDF file
@@ -125,6 +128,7 @@ class TestKnowledgeBaseUpdater:
         assert len(changes['modified']) == 0
         assert len(changes['deleted']) == 0
     
+    @pytest.mark.asyncio
     async def test_scan_for_updates_modified_files(self, updater, temp_dir):
         """Test scanning for modified files."""
         papers_dir = temp_dir / "papers"
@@ -156,6 +160,7 @@ class TestKnowledgeBaseUpdater:
         assert str(test_file) in changes['modified']
         assert len(changes['deleted']) == 0
     
+    @pytest.mark.asyncio
     async def test_scan_for_updates_deleted_files(self, updater, temp_dir):
         """Test scanning for deleted files."""
         papers_dir = temp_dir / "papers"
@@ -180,6 +185,7 @@ class TestKnowledgeBaseUpdater:
         assert len(changes['deleted']) == 1
         assert str(test_file) in changes['deleted']
     
+    @pytest.mark.asyncio
     async def test_perform_incremental_update_success(self, updater, temp_dir):
         """Test successful incremental update."""
         # Create test file
@@ -201,6 +207,7 @@ class TestKnowledgeBaseUpdater:
         # Check version was created
         updater.version_manager.create_version.assert_called()
     
+    @pytest.mark.asyncio
     async def test_perform_incremental_update_no_changes(self, updater):
         """Test update with no changes."""
         # Perform update with no files
@@ -211,6 +218,7 @@ class TestKnowledgeBaseUpdater:
         assert result.documents_processed == 0
         assert result.documents_added == 0
     
+    @pytest.mark.asyncio
     async def test_perform_incremental_update_with_failures(self, updater, temp_dir):
         """Test update with processing failures."""
         # Create test file
@@ -233,6 +241,7 @@ class TestKnowledgeBaseUpdater:
         assert result.documents_processed == 0
         assert result.documents_failed == 1
     
+    @pytest.mark.asyncio
     async def test_perform_incremental_update_exception_with_rollback(self, updater, temp_dir):
         """Test update exception handling with rollback."""
         # Create test file
@@ -253,6 +262,7 @@ class TestKnowledgeBaseUpdater:
         # Check rollback was attempted
         updater.version_manager.restore_version.assert_called()
     
+    @pytest.mark.asyncio
     async def test_rollback_update_success(self, updater):
         """Test successful update rollback."""
         # Mock successful rollback
@@ -264,6 +274,7 @@ class TestKnowledgeBaseUpdater:
         assert success is True
         updater.version_manager.restore_version.assert_called_with("v20240101_120000")
     
+    @pytest.mark.asyncio
     async def test_rollback_update_failure(self, updater):
         """Test failed update rollback."""
         # Mock failed rollback
@@ -274,6 +285,7 @@ class TestKnowledgeBaseUpdater:
         
         assert success is False
     
+    @pytest.mark.asyncio
     async def test_get_update_status(self, updater):
         """Test getting update status."""
         # Create mock update result
@@ -291,6 +303,7 @@ class TestKnowledgeBaseUpdater:
         assert status.update_id == "test_update"
         assert status.status == UpdateStatus.RUNNING
     
+    @pytest.mark.asyncio
     async def test_list_active_updates(self, updater):
         """Test listing active updates."""
         # Create mock update results
@@ -307,6 +320,7 @@ class TestKnowledgeBaseUpdater:
         assert update1 in updates
         assert update2 in updates
     
+    @pytest.mark.asyncio
     async def test_calculate_file_hash(self, updater, temp_dir):
         """Test file hash calculation."""
         # Create test file
@@ -326,6 +340,7 @@ class TestKnowledgeBaseUpdater:
         hash3 = await updater._calculate_file_hash(test_file)
         assert hash3 != hash1
     
+    @pytest.mark.asyncio
     async def test_metadata_operations(self, updater, temp_dir):
         """Test metadata save and load operations."""
         # Test data

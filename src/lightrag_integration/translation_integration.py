@@ -57,6 +57,15 @@ class TranslatedResponse:
         }
 
 
+class TranslationIntegrator:
+    """Alias for LightRAGTranslationIntegrator for backward compatibility."""
+    
+    def __init__(self, config=None):
+        self._integrator = LightRAGTranslationIntegrator()
+    
+    def __getattr__(self, name):
+        return getattr(self._integrator, name)
+
 class LightRAGTranslationIntegrator:
     """
     Integrates LightRAG responses with the existing translation system.

@@ -1,5 +1,5 @@
 """
-Enhanced Confidence Scoring for LightRAG Citations
+Confidence Scoring for LightRAG Citations
 
 This module implements confidence scoring that works with graph-based evidence,
 source document reliability scoring, and citation confidence display.
@@ -7,59 +7,64 @@ source document reliability scoring, and citation confidence display.
 Implements requirements 4.3 and 4.6.
 """
 
+import logging
 import math
-import statistics
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from collections import defaultdict, Counter
 
 try:
-    from .utils.logging import setup_logger
+    from lightrag_integration.utils.logging import setup_logger
 except ImportError:
+    # Fallback to basic logging if utils not available
     import logging
     def setup_logger(name, log_file=None):
         return logging.getLogger(name)
 
 
 @dataclass
-class SourceReliabilityScore:
-    """Reliability score for a source document."""
+class ConfidenceFactors:
+    """Individual confidence factors for scoring."""
+    entity_confidence: float = 0.0
+    relationship_confidence: float = 0.0
+    source_reliability: float = 0.0
+    graph_connectivity: float = 0.0
+    evidence_consistency: float = 0.0
+    citation_quality: float = 0.0
+    temporal_relevance: float = 0.0
+
+
+@dataclass
+class ConfidenceBreakdown:
+    """Detailed breakdown of confidence scoring."""
+    overall_confidence: float
+    base_confidence: float
+    enhancement_factor: float
+    confidence_factors: ConfidenceFactors
+    source_scores: Dict[str, float]
+    entity_scores: Dict[str, float]
+    relationship_scores: Dict[str, float]
+    explanation: str
+
+
+@dataclass
+class SourceReliability:
+    """Reliability assessment for a source document."""
     document_path: str
     reliability_score: float
     factors: Dict[str, float]
-    metadata: Dict[str, Any]
-
-
-@dataclass
-class CitationConfidenceScore:
-    """Confidence score for a citation."""
-    citation_id: str
-    confidence_score: float
-    reliability_score: float
-    evidence_strength: float
-    factors: Dict[str, float]
-
-
-@dataclass
-class GraphEvidenceMetrics:
-    """Metrics for graph-based evidence strength."""
-    entity_support: float
-    relationship_support: float
-    connectivity_score: float
-    consistency_score: float
-    diversity_score: float
+    metadata_quality: float
+    citation_frequency: int
+    content_quality: float
 
 
 class LightRAGConfidenceScorer:
     """
-    Enhanced confidence scoring system for LightRAG responses.
+    Confidence scoring system for LightRAG responses.
     
-    This class implements confidence scoring that considers:
-    - Graph-based evidence strength
-    - Source document reliability
-    - Citation confidence for UI display
-    - Multi-factor confidence analysis
+    This class implements sophisticated confidence scoring that considers
+    graph-based evidence strength, source document reliability, and
+    citation quality factors.
     """
     
     def __init__(self, config=None):
@@ -67,798 +72,691 @@ class LightRAGConfidenceScorer:
         self.config = config
         self.logger = setup_logger("lightrag_confidence_scorer")
         
-        # Confidence scoring parameters
-        self.min_confidence = 0.1
-        self.max_confidence = 1.0
-        self.default_reliability = 0.6
-        
-        # Weight factors for different confidence components
+        # Confidence scoring weights
         self.weights = {
-            "graph_evidence": 0.35,
-            "source_reliability": 0.25,
             "entity_confidence": 0.20,
-            "relationship_confidence": 0.15,
-            "citation_consistency": 0.05
+            "relationship_confidence": 0.20,
+            "source_reliability": 0.25,
+            "graph_connectivity": 0.15,
+            "evidence_consistency": 0.10,
+            "citation_quality": 0.05,
+            "temporal_relevance": 0.05
         }
         
-        # Reliability scoring factors
-        self.reliability_factors = {
-            "file_accessibility": 0.2,
-            "metadata_completeness": 0.15,
-            "citation_frequency": 0.25,
-            "content_quality": 0.2,
-            "recency": 0.1,
-            "source_diversity": 0.1
-        }
+        # Confidence thresholds
+        self.high_confidence_threshold = 0.8
+        self.medium_confidence_threshold = 0.6
+        self.low_confidence_threshold = 0.4
+        
+        # Source reliability cache
+        self._source_reliability_cache: Dict[str, SourceReliability] = {}
         
         self.logger.info("LightRAG Confidence Scorer initialized")
     
-    def calculate_enhanced_confidence(
+    def calculate_response_confidence(
         self,
         base_confidence: float,
+        source_documents: List[str],
         entities_used: List[Dict[str, Any]],
         relationships_used: List[Dict[str, Any]],
-        source_documents: List[str],
-        citation_map: Optional[Dict[str, Any]] = None
-    ) -> Tuple[float, Dict[str, Any]]:
+        query_context: Optional[Dict[str, Any]] = None
+    ) -> ConfidenceBreakdown:
         """
-        Calculate enhanced confidence score based on graph evidence and source reliability.
+        Calculate comprehensive confidence score for a LightRAG response.
         
         Args:
             base_confidence: Base confidence from query processing
+            source_documents: List of source document paths
             entities_used: List of entities used in the response
             relationships_used: List of relationships used in the response
-            source_documents: List of source document paths
-            citation_map: Optional citation map for additional context
+            query_context: Optional context about the query
         
         Returns:
-            Tuple of (enhanced_confidence, detailed_breakdown)
+            ConfidenceBreakdown with detailed scoring information
         """
         try:
-            self.logger.info(f"Calculating enhanced confidence for {len(source_documents)} sources")
+            self.logger.info(f"Calculating confidence for response with {len(source_documents)} sources")
             
-            # Calculate graph evidence metrics
-            graph_metrics = self._calculate_graph_evidence_metrics(
-                entities_used, relationships_used, source_documents
+            # Calculate individual confidence factors
+            factors = self._calculate_confidence_factors(
+                source_documents, entities_used, relationships_used, query_context
             )
             
             # Calculate source reliability scores
-            reliability_scores = self._calculate_source_reliability_scores(
+            source_scores = self._calculate_source_reliability_scores(
                 source_documents, entities_used, relationships_used
             )
             
-            # Calculate citation confidence scores
-            citation_confidences = self._calculate_citation_confidence_scores(
-                citation_map or {}, reliability_scores, graph_metrics
+            # Calculate entity confidence scores
+            entity_scores = self._calculate_entity_confidence_scores(entities_used)
+            
+            # Calculate relationship confidence scores
+            relationship_scores = self._calculate_relationship_confidence_scores(relationships_used)
+            
+            # Calculate weighted enhancement factor
+            enhancement_factor = self._calculate_enhancement_factor(factors)
+            
+            # Apply enhancement to base confidence
+            enhanced_confidence = self._apply_confidence_enhancement(
+                base_confidence, enhancement_factor
             )
             
-            # Combine all factors for enhanced confidence
-            enhanced_confidence = self._combine_confidence_factors(
-                base_confidence, graph_metrics, reliability_scores, citation_confidences
+            # Generate explanation
+            explanation = self._generate_confidence_explanation(
+                base_confidence, enhanced_confidence, factors, source_scores
             )
             
-            # Create detailed breakdown
-            breakdown = self._create_confidence_breakdown(
-                base_confidence, enhanced_confidence, graph_metrics,
-                reliability_scores, citation_confidences
+            breakdown = ConfidenceBreakdown(
+                overall_confidence=enhanced_confidence,
+                base_confidence=base_confidence,
+                enhancement_factor=enhancement_factor,
+                confidence_factors=factors,
+                source_scores=source_scores,
+                entity_scores=entity_scores,
+                relationship_scores=relationship_scores,
+                explanation=explanation
             )
             
-            self.logger.info(f"Enhanced confidence: {enhanced_confidence:.3f} (base: {base_confidence:.3f})")
-            return enhanced_confidence, breakdown
+            self.logger.info(f"Confidence calculated: {enhanced_confidence:.3f} (base: {base_confidence:.3f})")
+            return breakdown
             
         except Exception as e:
-            self.logger.error(f"Error calculating enhanced confidence: {str(e)}", exc_info=True)
-            return base_confidence, {"error": str(e), "base_confidence": base_confidence}
+            self.logger.error(f"Error calculating confidence: {str(e)}", exc_info=True)
+            
+            # Return fallback confidence breakdown
+            return ConfidenceBreakdown(
+                overall_confidence=base_confidence,
+                base_confidence=base_confidence,
+                enhancement_factor=0.0,
+                confidence_factors=ConfidenceFactors(),
+                source_scores={},
+                entity_scores={},
+                relationship_scores={},
+                explanation=f"Error calculating confidence: {str(e)}"
+            )
     
-    def _calculate_graph_evidence_metrics(
+    def _calculate_confidence_factors(
         self,
+        source_documents: List[str],
         entities_used: List[Dict[str, Any]],
         relationships_used: List[Dict[str, Any]],
-        source_documents: List[str]
-    ) -> GraphEvidenceMetrics:
-        """Calculate metrics for graph-based evidence strength."""
+        query_context: Optional[Dict[str, Any]]
+    ) -> ConfidenceFactors:
+        """Calculate individual confidence factors."""
+        factors = ConfidenceFactors()
+        
         try:
-            # Entity support score
-            entity_support = 0.0
+            # Entity confidence factor
             if entities_used:
                 entity_confidences = [
-                    entity.get("relevance_score", 0.5) for entity in entities_used
+                    entity.get("relevance_score", 0.5) 
+                    for entity in entities_used
                 ]
-                entity_support = statistics.mean(entity_confidences)
-                
-                # Boost for multiple high-confidence entities
-                high_conf_entities = sum(1 for conf in entity_confidences if conf >= 0.8)
-                entity_support += min(high_conf_entities * 0.05, 0.2)
+                factors.entity_confidence = sum(entity_confidences) / len(entity_confidences)
             
-            # Relationship support score
-            relationship_support = 0.0
+            # Relationship confidence factor
             if relationships_used:
                 rel_confidences = [
-                    rel.get("confidence", 0.5) for rel in relationships_used
+                    rel.get("confidence", 0.5) 
+                    for rel in relationships_used
                 ]
-                relationship_support = statistics.mean(rel_confidences)
-                
-                # Boost for multiple relationships
-                relationship_support += min(len(relationships_used) * 0.03, 0.15)
+                factors.relationship_confidence = sum(rel_confidences) / len(rel_confidences)
             
-            # Connectivity score (how well entities are connected)
-            connectivity_score = self._calculate_connectivity_score(
+            # Source reliability factor
+            if source_documents:
+                source_reliabilities = []
+                for doc in source_documents:
+                    reliability = self._assess_source_reliability(
+                        doc, entities_used, relationships_used
+                    )
+                    source_reliabilities.append(reliability.reliability_score)
+                factors.source_reliability = sum(source_reliabilities) / len(source_reliabilities)
+            
+            # Graph connectivity factor
+            factors.graph_connectivity = self._calculate_graph_connectivity(
                 entities_used, relationships_used
             )
             
-            # Consistency score (entities and relationships from same sources)
-            consistency_score = self._calculate_consistency_score(
+            # Evidence consistency factor
+            factors.evidence_consistency = self._calculate_evidence_consistency(
                 entities_used, relationships_used, source_documents
             )
             
-            # Diversity score (evidence from multiple sources)
-            diversity_score = self._calculate_diversity_score(
-                entities_used, relationships_used, source_documents
+            # Citation quality factor
+            factors.citation_quality = self._calculate_citation_quality(
+                source_documents, entities_used
             )
             
-            return GraphEvidenceMetrics(
-                entity_support=min(entity_support, 1.0),
-                relationship_support=min(relationship_support, 1.0),
-                connectivity_score=connectivity_score,
-                consistency_score=consistency_score,
-                diversity_score=diversity_score
+            # Temporal relevance factor
+            factors.temporal_relevance = self._calculate_temporal_relevance(
+                source_documents, query_context
             )
             
         except Exception as e:
-            self.logger.error(f"Error calculating graph evidence metrics: {str(e)}")
-            return GraphEvidenceMetrics(0.5, 0.5, 0.5, 0.5, 0.5)
+            self.logger.error(f"Error calculating confidence factors: {str(e)}")
+        
+        return factors
     
-    def _calculate_connectivity_score(
+    def _assess_source_reliability(
+        self,
+        document_path: str,
+        entities_used: List[Dict[str, Any]],
+        relationships_used: List[Dict[str, Any]]
+    ) -> SourceReliability:
+        """Assess the reliability of a source document."""
+        # Check cache first
+        if document_path in self._source_reliability_cache:
+            return self._source_reliability_cache[document_path]
+        
+        try:
+            factors = {}
+            
+            # Metadata quality assessment
+            metadata_quality = self._assess_metadata_quality(document_path)
+            factors["metadata_quality"] = metadata_quality
+            
+            # Citation frequency (how often this document is referenced)
+            citation_frequency = self._calculate_citation_frequency(
+                document_path, entities_used, relationships_used
+            )
+            factors["citation_frequency"] = min(citation_frequency / 10.0, 1.0)  # Normalize
+            
+            # Content quality assessment
+            content_quality = self._assess_content_quality(
+                document_path, entities_used, relationships_used
+            )
+            factors["content_quality"] = content_quality
+            
+            # Calculate overall reliability score
+            reliability_score = (
+                factors["metadata_quality"] * 0.3 +
+                factors["citation_frequency"] * 0.4 +
+                factors["content_quality"] * 0.3
+            )
+            
+            reliability = SourceReliability(
+                document_path=document_path,
+                reliability_score=reliability_score,
+                factors=factors,
+                metadata_quality=metadata_quality,
+                citation_frequency=citation_frequency,
+                content_quality=content_quality
+            )
+            
+            # Cache the result
+            self._source_reliability_cache[document_path] = reliability
+            
+            return reliability
+            
+        except Exception as e:
+            self.logger.error(f"Error assessing source reliability for {document_path}: {str(e)}")
+            
+            # Return default reliability
+            return SourceReliability(
+                document_path=document_path,
+                reliability_score=0.5,
+                factors={"error": 1.0},
+                metadata_quality=0.5,
+                citation_frequency=1,
+                content_quality=0.5
+            )
+    
+    def _assess_metadata_quality(self, document_path: str) -> float:
+        """Assess the quality of document metadata."""
+        try:
+            from pathlib import Path
+            
+            # Basic assessment based on filename and path structure
+            path = Path(document_path)
+            
+            quality_score = 0.5  # Base score
+            
+            # Bonus for structured filename
+            filename = path.stem.lower()
+            if any(keyword in filename for keyword in ["clinical", "metabolomics", "biomarker", "research"]):
+                quality_score += 0.1
+            
+            # Bonus for year in filename
+            import re
+            if re.search(r'(19|20)\d{2}', filename):
+                quality_score += 0.1
+            
+            # Bonus for author names pattern
+            if re.search(r'[a-z]+_[a-z]+', filename):
+                quality_score += 0.1
+            
+            # Bonus for journal or conference patterns
+            if any(keyword in filename for keyword in ["journal", "nature", "science", "cell", "plos"]):
+                quality_score += 0.2
+            
+            return min(quality_score, 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Error assessing metadata quality: {str(e)}")
+            return 0.5
+    
+    def _calculate_citation_frequency(
+        self,
+        document_path: str,
+        entities_used: List[Dict[str, Any]],
+        relationships_used: List[Dict[str, Any]]
+    ) -> int:
+        """Calculate how frequently a document is cited."""
+        frequency = 0
+        
+        # Count entity references
+        for entity in entities_used:
+            if document_path in entity.get("source_documents", []):
+                frequency += 1
+        
+        # Count relationship references
+        for rel in relationships_used:
+            if document_path in rel.get("source_documents", []):
+                frequency += 1
+        
+        return frequency
+    
+    def _assess_content_quality(
+        self,
+        document_path: str,
+        entities_used: List[Dict[str, Any]],
+        relationships_used: List[Dict[str, Any]]
+    ) -> float:
+        """Assess the quality of content extracted from the document."""
+        try:
+            # Calculate based on entity and relationship quality from this document
+            entity_quality_scores = []
+            for entity in entities_used:
+                if document_path in entity.get("source_documents", []):
+                    entity_quality_scores.append(entity.get("relevance_score", 0.5))
+            
+            relationship_quality_scores = []
+            for rel in relationships_used:
+                if document_path in rel.get("source_documents", []):
+                    relationship_quality_scores.append(rel.get("confidence", 0.5))
+            
+            all_scores = entity_quality_scores + relationship_quality_scores
+            
+            if all_scores:
+                return sum(all_scores) / len(all_scores)
+            else:
+                return 0.5  # Default quality
+                
+        except Exception as e:
+            self.logger.error(f"Error assessing content quality: {str(e)}")
+            return 0.5
+    
+    def _calculate_graph_connectivity(
         self,
         entities_used: List[Dict[str, Any]],
         relationships_used: List[Dict[str, Any]]
     ) -> float:
-        """Calculate how well entities are connected through relationships."""
-        if not entities_used or not relationships_used:
-            return 0.3  # Low connectivity for isolated entities
-        
-        # Create entity ID set
-        entity_ids = {entity.get("id", "") for entity in entities_used}
-        
-        # Count how many entities are connected through relationships
-        connected_entities = set()
-        for rel in relationships_used:
-            source_id = rel.get("source", "")
-            target_id = rel.get("target", "")
+        """Calculate how well-connected the entities are in the graph."""
+        try:
+            if not entities_used or not relationships_used:
+                return 0.0
             
-            if source_id in entity_ids:
-                connected_entities.add(source_id)
-            if target_id in entity_ids:
-                connected_entities.add(target_id)
-        
-        # Calculate connectivity ratio
-        if len(entity_ids) == 0:
-            return 0.3
-        
-        connectivity_ratio = len(connected_entities) / len(entity_ids)
-        
-        # Boost for high connectivity
-        if connectivity_ratio >= 0.8:
-            return min(connectivity_ratio + 0.1, 1.0)
-        
-        return connectivity_ratio
+            # Create entity ID set
+            entity_ids = {entity.get("id", "") for entity in entities_used}
+            
+            # Count how many entities are connected by relationships
+            connected_entities = set()
+            for rel in relationships_used:
+                source_id = rel.get("source", "")
+                target_id = rel.get("target", "")
+                
+                if source_id in entity_ids:
+                    connected_entities.add(source_id)
+                if target_id in entity_ids:
+                    connected_entities.add(target_id)
+            
+            # Calculate connectivity ratio
+            if len(entity_ids) > 0:
+                connectivity = len(connected_entities) / len(entity_ids)
+                return min(connectivity, 1.0)
+            
+            return 0.0
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating graph connectivity: {str(e)}")
+            return 0.0
     
-    def _calculate_consistency_score(
+    def _calculate_evidence_consistency(
         self,
         entities_used: List[Dict[str, Any]],
         relationships_used: List[Dict[str, Any]],
         source_documents: List[str]
     ) -> float:
         """Calculate consistency of evidence across sources."""
-        if not source_documents:
-            return 0.5
-        
-        # Count source overlap between entities and relationships
-        entity_sources = set()
-        for entity in entities_used:
-            entity_sources.update(entity.get("source_documents", []))
-        
-        rel_sources = set()
-        for rel in relationships_used:
-            rel_sources.update(rel.get("source_documents", []))
-        
-        all_sources = entity_sources.union(rel_sources)
-        overlapping_sources = entity_sources.intersection(rel_sources)
-        
-        if len(all_sources) == 0:
-            return 0.5
-        
-        # Higher consistency when entities and relationships share sources
-        consistency = len(overlapping_sources) / len(all_sources)
-        
-        # Boost for multiple overlapping sources
-        if len(overlapping_sources) >= 2:
-            consistency += 0.1
-        
-        return min(consistency, 1.0)
-    
-    def _calculate_diversity_score(
-        self,
-        entities_used: List[Dict[str, Any]],
-        relationships_used: List[Dict[str, Any]],
-        source_documents: List[str]
-    ) -> float:
-        """Calculate diversity of evidence sources."""
-        unique_sources = set(source_documents)
-        
-        if len(unique_sources) == 0:
+        try:
+            if not source_documents:
+                return 0.0
+            
+            # Count how many sources support each entity/relationship
+            entity_source_counts = defaultdict(set)
+            for entity in entities_used:
+                entity_id = entity.get("id", "")
+                for doc in entity.get("source_documents", []):
+                    entity_source_counts[entity_id].add(doc)
+            
+            relationship_source_counts = defaultdict(set)
+            for rel in relationships_used:
+                rel_id = rel.get("id", "")
+                for doc in rel.get("source_documents", []):
+                    relationship_source_counts[rel_id].add(doc)
+            
+            # Calculate consistency score based on multi-source support
+            total_items = len(entity_source_counts) + len(relationship_source_counts)
+            if total_items == 0:
+                return 0.0
+            
+            multi_source_items = 0
+            for sources in entity_source_counts.values():
+                if len(sources) > 1:
+                    multi_source_items += 1
+            
+            for sources in relationship_source_counts.values():
+                if len(sources) > 1:
+                    multi_source_items += 1
+            
+            consistency = multi_source_items / total_items
+            return min(consistency, 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating evidence consistency: {str(e)}")
             return 0.0
-        elif len(unique_sources) == 1:
-            return 0.4  # Single source
-        elif len(unique_sources) == 2:
-            return 0.7  # Two sources
-        else:
-            return min(0.8 + (len(unique_sources) - 3) * 0.05, 1.0)  # Multiple sources
+    
+    def _calculate_citation_quality(
+        self,
+        source_documents: List[str],
+        entities_used: List[Dict[str, Any]]
+    ) -> float:
+        """Calculate the quality of citations."""
+        try:
+            if not source_documents:
+                return 0.0
+            
+            quality_scores = []
+            
+            for doc in source_documents:
+                # Basic quality assessment
+                quality = 0.5  # Base quality
+                
+                # Bonus for PDF files
+                if doc.lower().endswith('.pdf'):
+                    quality += 0.2
+                
+                # Bonus for academic-looking filenames
+                filename = doc.lower()
+                if any(keyword in filename for keyword in [
+                    'journal', 'research', 'study', 'clinical', 'metabolomics'
+                ]):
+                    quality += 0.2
+                
+                # Bonus for having page numbers or sections
+                doc_entities = [e for e in entities_used if doc in e.get("source_documents", [])]
+                has_location_info = any(
+                    "page" in e.get("properties", {}) or "section" in e.get("properties", {})
+                    for e in doc_entities
+                )
+                if has_location_info:
+                    quality += 0.1
+                
+                quality_scores.append(min(quality, 1.0))
+            
+            return sum(quality_scores) / len(quality_scores) if quality_scores else 0.0
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating citation quality: {str(e)}")
+            return 0.0
+    
+    def _calculate_temporal_relevance(
+        self,
+        source_documents: List[str],
+        query_context: Optional[Dict[str, Any]]
+    ) -> float:
+        """Calculate temporal relevance of sources."""
+        try:
+            if not source_documents:
+                return 0.0
+            
+            import re
+            from datetime import datetime
+            
+            current_year = datetime.now().year
+            relevance_scores = []
+            
+            for doc in source_documents:
+                # Try to extract year from filename
+                year_match = re.search(r'(19|20)(\d{2})', doc)
+                if year_match:
+                    doc_year = int(year_match.group())
+                    
+                    # Calculate relevance based on recency
+                    years_old = current_year - doc_year
+                    
+                    if years_old <= 2:
+                        relevance = 1.0  # Very recent
+                    elif years_old <= 5:
+                        relevance = 0.8  # Recent
+                    elif years_old <= 10:
+                        relevance = 0.6  # Moderately recent
+                    else:
+                        relevance = 0.4  # Older
+                    
+                    relevance_scores.append(relevance)
+                else:
+                    # No year found, assume moderate relevance
+                    relevance_scores.append(0.6)
+            
+            return sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0.6
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating temporal relevance: {str(e)}")
+            return 0.6
     
     def _calculate_source_reliability_scores(
         self,
         source_documents: List[str],
         entities_used: List[Dict[str, Any]],
         relationships_used: List[Dict[str, Any]]
-    ) -> List[SourceReliabilityScore]:
-        """Calculate reliability scores for source documents."""
-        reliability_scores = []
+    ) -> Dict[str, float]:
+        """Calculate reliability scores for all source documents."""
+        scores = {}
         
-        for doc_path in set(source_documents):
-            try:
-                factors = {}
-                
-                # File accessibility factor
-                factors["file_accessibility"] = self._check_file_accessibility(doc_path)
-                
-                # Metadata completeness factor
-                factors["metadata_completeness"] = self._assess_metadata_completeness(doc_path)
-                
-                # Citation frequency factor
-                factors["citation_frequency"] = self._calculate_citation_frequency(
-                    doc_path, entities_used, relationships_used
-                )
-                
-                # Content quality factor (based on entity/relationship confidence)
-                factors["content_quality"] = self._assess_content_quality(
-                    doc_path, entities_used, relationships_used
-                )
-                
-                # Recency factor
-                factors["recency"] = self._assess_document_recency(doc_path)
-                
-                # Source diversity factor (how unique this source is)
-                factors["source_diversity"] = self._assess_source_diversity(
-                    doc_path, source_documents
-                )
-                
-                # Calculate weighted reliability score
-                reliability_score = sum(
-                    factors[factor] * self.reliability_factors[factor]
-                    for factor in factors
-                )
-                
-                reliability_scores.append(SourceReliabilityScore(
-                    document_path=doc_path,
-                    reliability_score=min(max(reliability_score, self.min_confidence), self.max_confidence),
-                    factors=factors,
-                    metadata={"path": doc_path}
-                ))
-                
-            except Exception as e:
-                self.logger.error(f"Error calculating reliability for {doc_path}: {str(e)}")
-                # Fallback reliability score
-                reliability_scores.append(SourceReliabilityScore(
-                    document_path=doc_path,
-                    reliability_score=self.default_reliability,
-                    factors={"error": 1.0},
-                    metadata={"error": str(e)}
-                ))
+        for doc in source_documents:
+            reliability = self._assess_source_reliability(doc, entities_used, relationships_used)
+            scores[doc] = reliability.reliability_score
         
-        return reliability_scores
+        return scores
     
-    def _check_file_accessibility(self, doc_path: str) -> float:
-        """Check if the document file is accessible."""
-        try:
-            path = Path(doc_path)
-            if path.exists() and path.is_file():
-                # Check if file is readable
-                try:
-                    with open(path, 'rb') as f:
-                        f.read(1)  # Try to read first byte
-                    return 1.0  # Fully accessible
-                except Exception:
-                    return 0.5  # Exists but not readable
-            else:
-                return 0.0  # File doesn't exist
-        except Exception:
-            return 0.0
-    
-    def _assess_metadata_completeness(self, doc_path: str) -> float:
-        """Assess completeness of document metadata."""
-        try:
-            path = Path(doc_path)
-            
-            # Basic metadata checks
-            score = 0.0
-            
-            # File extension check
-            if path.suffix.lower() in ['.pdf', '.txt', '.doc', '.docx']:
-                score += 0.3
-            
-            # Filename informativeness (contains year, meaningful words)
-            filename = path.stem.lower()
-            if any(year in filename for year in ['2020', '2021', '2022', '2023', '2024']):
-                score += 0.2
-            
-            if len(filename.split('_')) >= 2 or len(filename.split(' ')) >= 2:
-                score += 0.2
-            
-            # File size reasonableness (not empty, not too large)
-            if path.exists():
-                size = path.stat().st_size
-                if 1000 < size < 50_000_000:  # Between 1KB and 50MB
-                    score += 0.3
-                elif size > 0:
-                    score += 0.1
-            
-            return min(score, 1.0)
-            
-        except Exception:
-            return 0.3  # Default moderate score
-    
-    def _calculate_citation_frequency(
+    def _calculate_entity_confidence_scores(
         self,
-        doc_path: str,
-        entities_used: List[Dict[str, Any]],
-        relationships_used: List[Dict[str, Any]]
-    ) -> float:
-        """Calculate how frequently this document is cited."""
-        citation_count = 0
+        entities_used: List[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        """Calculate confidence scores for entities."""
+        scores = {}
         
-        # Count entity citations
         for entity in entities_used:
-            if doc_path in entity.get("source_documents", []):
-                citation_count += 1
+            entity_id = entity.get("id", "")
+            confidence = entity.get("relevance_score", 0.5)
+            scores[entity_id] = confidence
         
-        # Count relationship citations
-        for rel in relationships_used:
-            if doc_path in rel.get("source_documents", []):
-                citation_count += 1
-        
-        # Normalize citation frequency
-        total_citations = len(entities_used) + len(relationships_used)
-        if total_citations == 0:
-            return 0.5
-        
-        frequency = citation_count / total_citations
-        
-        # Boost for high citation frequency
-        if frequency >= 0.5:
-            return min(frequency + 0.2, 1.0)
-        
-        return frequency
+        return scores
     
-    def _assess_content_quality(
+    def _calculate_relationship_confidence_scores(
         self,
-        doc_path: str,
-        entities_used: List[Dict[str, Any]],
         relationships_used: List[Dict[str, Any]]
-    ) -> float:
-        """Assess content quality based on entity/relationship confidence."""
-        confidences = []
+    ) -> Dict[str, float]:
+        """Calculate confidence scores for relationships."""
+        scores = {}
         
-        # Collect confidences from entities citing this document
-        for entity in entities_used:
-            if doc_path in entity.get("source_documents", []):
-                confidences.append(entity.get("relevance_score", 0.5))
-        
-        # Collect confidences from relationships citing this document
         for rel in relationships_used:
-            if doc_path in rel.get("source_documents", []):
-                confidences.append(rel.get("confidence", 0.5))
+            rel_id = rel.get("id", "")
+            confidence = rel.get("confidence", 0.5)
+            scores[rel_id] = confidence
         
-        if not confidences:
-            return 0.5  # Default quality
-        
-        # Use mean confidence as quality indicator
-        quality = statistics.mean(confidences)
-        
-        # Boost for consistently high quality
-        if all(conf >= 0.8 for conf in confidences):
-            quality += 0.1
-        
-        return min(quality, 1.0)
+        return scores
     
-    def _assess_document_recency(self, doc_path: str) -> float:
-        """Assess document recency based on file modification time and filename."""
+    def _calculate_enhancement_factor(self, factors: ConfidenceFactors) -> float:
+        """Calculate the overall enhancement factor from individual factors."""
         try:
-            path = Path(doc_path)
-            
-            # Try to extract year from filename
-            filename = path.stem.lower()
-            current_year = datetime.now().year
-            
-            for year_str in ['2024', '2023', '2022', '2021', '2020']:
-                if year_str in filename:
-                    year = int(year_str)
-                    age = current_year - year
-                    
-                    if age == 0:
-                        return 1.0  # Current year
-                    elif age == 1:
-                        return 0.9  # Last year
-                    elif age <= 3:
-                        return 0.7  # Recent (within 3 years)
-                    elif age <= 5:
-                        return 0.5  # Moderately recent
-                    else:
-                        return 0.3  # Older
-            
-            # Fallback to file modification time
-            if path.exists():
-                mod_time = datetime.fromtimestamp(path.stat().st_mtime)
-                age_days = (datetime.now() - mod_time).days
-                
-                if age_days < 365:
-                    return 0.8  # Modified within a year
-                elif age_days < 365 * 2:
-                    return 0.6  # Modified within 2 years
-                else:
-                    return 0.4  # Older modification
-            
-            return 0.5  # Default moderate recency
-            
-        except Exception:
-            return 0.5
-    
-    def _assess_source_diversity(self, doc_path: str, all_sources: List[str]) -> float:
-        """Assess how unique/diverse this source is compared to others."""
-        if len(all_sources) <= 1:
-            return 0.5  # Single source
-        
-        # Simple diversity based on filename uniqueness
-        path = Path(doc_path)
-        filename_words = set(path.stem.lower().split('_') + path.stem.lower().split(' '))
-        
-        # Compare with other sources
-        similarity_scores = []
-        for other_source in all_sources:
-            if other_source != doc_path:
-                other_path = Path(other_source)
-                other_words = set(other_path.stem.lower().split('_') + other_path.stem.lower().split(' '))
-                
-                # Calculate Jaccard similarity
-                intersection = len(filename_words.intersection(other_words))
-                union = len(filename_words.union(other_words))
-                
-                if union > 0:
-                    similarity = intersection / union
-                    similarity_scores.append(similarity)
-        
-        if not similarity_scores:
-            return 0.8  # Unique source
-        
-        # Lower similarity means higher diversity
-        avg_similarity = statistics.mean(similarity_scores)
-        diversity = 1.0 - avg_similarity
-        
-        return max(diversity, 0.2)  # Minimum diversity score
-    
-    def _calculate_citation_confidence_scores(
-        self,
-        citation_map: Dict[str, Any],
-        reliability_scores: List[SourceReliabilityScore],
-        graph_metrics: GraphEvidenceMetrics
-    ) -> List[CitationConfidenceScore]:
-        """Calculate confidence scores for individual citations."""
-        citation_confidences = []
-        
-        # Create reliability lookup
-        reliability_lookup = {
-            score.document_path: score.reliability_score 
-            for score in reliability_scores
-        }
-        
-        for citation_id, citation in citation_map.items():
-            try:
-                # Get document path
-                if hasattr(citation, 'file_path'):
-                    doc_path = citation.file_path
-                elif isinstance(citation, dict):
-                    doc_path = citation.get('file_path', '')
-                else:
-                    doc_path = ''
-                
-                # Get base citation confidence
-                if hasattr(citation, 'confidence_score'):
-                    base_confidence = citation.confidence_score
-                elif isinstance(citation, dict):
-                    base_confidence = citation.get('confidence_score', 0.5)
-                else:
-                    base_confidence = 0.5
-                
-                # Get reliability score
-                reliability = reliability_lookup.get(doc_path, self.default_reliability)
-                
-                # Calculate evidence strength from graph metrics
-                evidence_strength = (
-                    graph_metrics.entity_support * 0.4 +
-                    graph_metrics.relationship_support * 0.3 +
-                    graph_metrics.connectivity_score * 0.2 +
-                    graph_metrics.consistency_score * 0.1
-                )
-                
-                # Combine factors for final citation confidence
-                citation_confidence = (
-                    base_confidence * 0.4 +
-                    reliability * 0.35 +
-                    evidence_strength * 0.25
-                )
-                
-                citation_confidences.append(CitationConfidenceScore(
-                    citation_id=citation_id,
-                    confidence_score=min(max(citation_confidence, self.min_confidence), self.max_confidence),
-                    reliability_score=reliability,
-                    evidence_strength=evidence_strength,
-                    factors={
-                        "base_confidence": base_confidence,
-                        "reliability": reliability,
-                        "evidence_strength": evidence_strength
-                    }
-                ))
-                
-            except Exception as e:
-                self.logger.error(f"Error calculating confidence for citation {citation_id}: {str(e)}")
-                # Fallback confidence
-                citation_confidences.append(CitationConfidenceScore(
-                    citation_id=citation_id,
-                    confidence_score=0.5,
-                    reliability_score=0.5,
-                    evidence_strength=0.5,
-                    factors={"error": str(e)}
-                ))
-        
-        return citation_confidences
-    
-    def _combine_confidence_factors(
-        self,
-        base_confidence: float,
-        graph_metrics: GraphEvidenceMetrics,
-        reliability_scores: List[SourceReliabilityScore],
-        citation_confidences: List[CitationConfidenceScore]
-    ) -> float:
-        """Combine all confidence factors into final enhanced confidence."""
-        try:
-            # Graph evidence component
-            graph_evidence_score = (
-                graph_metrics.entity_support * 0.3 +
-                graph_metrics.relationship_support * 0.25 +
-                graph_metrics.connectivity_score * 0.2 +
-                graph_metrics.consistency_score * 0.15 +
-                graph_metrics.diversity_score * 0.1
+            enhancement = (
+                factors.entity_confidence * self.weights["entity_confidence"] +
+                factors.relationship_confidence * self.weights["relationship_confidence"] +
+                factors.source_reliability * self.weights["source_reliability"] +
+                factors.graph_connectivity * self.weights["graph_connectivity"] +
+                factors.evidence_consistency * self.weights["evidence_consistency"] +
+                factors.citation_quality * self.weights["citation_quality"] +
+                factors.temporal_relevance * self.weights["temporal_relevance"]
             )
             
-            # Source reliability component
-            if reliability_scores:
-                avg_reliability = statistics.mean([score.reliability_score for score in reliability_scores])
-            else:
-                avg_reliability = self.default_reliability
-            
-            # Entity confidence component
-            entity_confidence = graph_metrics.entity_support
-            
-            # Relationship confidence component
-            relationship_confidence = graph_metrics.relationship_support
-            
-            # Citation consistency component
-            if citation_confidences:
-                citation_consistency = statistics.mean([
-                    score.confidence_score for score in citation_confidences
-                ])
-            else:
-                citation_consistency = base_confidence
-            
-            # Weighted combination
-            enhanced_confidence = (
-                graph_evidence_score * self.weights["graph_evidence"] +
-                avg_reliability * self.weights["source_reliability"] +
-                entity_confidence * self.weights["entity_confidence"] +
-                relationship_confidence * self.weights["relationship_confidence"] +
-                citation_consistency * self.weights["citation_consistency"]
-            )
-            
-            # Apply base confidence influence
-            final_confidence = (enhanced_confidence * 0.7) + (base_confidence * 0.3)
-            
-            return min(max(final_confidence, self.min_confidence), self.max_confidence)
+            return min(enhancement, 1.0)
             
         except Exception as e:
-            self.logger.error(f"Error combining confidence factors: {str(e)}")
+            self.logger.error(f"Error calculating enhancement factor: {str(e)}")
+            return 0.0
+    
+    def _apply_confidence_enhancement(
+        self,
+        base_confidence: float,
+        enhancement_factor: float
+    ) -> float:
+        """Apply enhancement factor to base confidence."""
+        try:
+            # Use a logarithmic enhancement to prevent over-confidence
+            enhancement_multiplier = 0.3  # Maximum 30% enhancement
+            enhancement = enhancement_factor * enhancement_multiplier
+            
+            # Apply enhancement with diminishing returns
+            enhanced = base_confidence + (enhancement * (1 - base_confidence))
+            
+            return min(enhanced, 1.0)
+            
+        except Exception as e:
+            self.logger.error(f"Error applying confidence enhancement: {str(e)}")
             return base_confidence
     
-    def _create_confidence_breakdown(
+    def _generate_confidence_explanation(
         self,
         base_confidence: float,
         enhanced_confidence: float,
-        graph_metrics: GraphEvidenceMetrics,
-        reliability_scores: List[SourceReliabilityScore],
-        citation_confidences: List[CitationConfidenceScore]
-    ) -> Dict[str, Any]:
-        """Create detailed confidence breakdown for analysis."""
+        factors: ConfidenceFactors,
+        source_scores: Dict[str, float]
+    ) -> str:
+        """Generate human-readable explanation of confidence scoring."""
         try:
-            breakdown = {
-                "base_confidence": base_confidence,
-                "enhanced_confidence": enhanced_confidence,
-                "improvement": enhanced_confidence - base_confidence,
-                
-                "graph_evidence": {
-                    "entity_support": graph_metrics.entity_support,
-                    "relationship_support": graph_metrics.relationship_support,
-                    "connectivity_score": graph_metrics.connectivity_score,
-                    "consistency_score": graph_metrics.consistency_score,
-                    "diversity_score": graph_metrics.diversity_score
-                },
-                
-                "source_reliability": {
-                    "average_reliability": statistics.mean([s.reliability_score for s in reliability_scores]) if reliability_scores else 0.5,
-                    "source_count": len(reliability_scores),
-                    "high_reliability_sources": sum(1 for s in reliability_scores if s.reliability_score >= 0.8),
-                    "low_reliability_sources": sum(1 for s in reliability_scores if s.reliability_score < 0.5)
-                },
-                
-                "citation_confidence": {
-                    "average_citation_confidence": statistics.mean([c.confidence_score for c in citation_confidences]) if citation_confidences else 0.5,
-                    "citation_count": len(citation_confidences),
-                    "high_confidence_citations": sum(1 for c in citation_confidences if c.confidence_score >= 0.8),
-                    "low_confidence_citations": sum(1 for c in citation_confidences if c.confidence_score < 0.5)
-                },
-                
-                "weights_used": self.weights,
-                "reliability_factors_used": self.reliability_factors
-            }
+            explanation_parts = []
             
-            return breakdown
+            # Overall confidence
+            confidence_level = self._get_confidence_level(enhanced_confidence)
+            explanation_parts.append(f"Overall confidence: {confidence_level} ({enhanced_confidence:.2f})")
+            
+            if enhanced_confidence != base_confidence:
+                enhancement = enhanced_confidence - base_confidence
+                explanation_parts.append(f"Enhanced from base confidence of {base_confidence:.2f} (+{enhancement:.2f})")
+            
+            # Key factors
+            explanation_parts.append("\nKey factors:")
+            
+            if factors.entity_confidence > 0:
+                explanation_parts.append(f"• Entity relevance: {factors.entity_confidence:.2f}")
+            
+            if factors.relationship_confidence > 0:
+                explanation_parts.append(f"• Relationship strength: {factors.relationship_confidence:.2f}")
+            
+            if factors.source_reliability > 0:
+                explanation_parts.append(f"• Source reliability: {factors.source_reliability:.2f}")
+            
+            if factors.graph_connectivity > 0:
+                explanation_parts.append(f"• Graph connectivity: {factors.graph_connectivity:.2f}")
+            
+            # Source quality summary
+            if source_scores:
+                high_quality_sources = sum(1 for score in source_scores.values() if score >= 0.8)
+                total_sources = len(source_scores)
+                explanation_parts.append(f"\nSources: {high_quality_sources}/{total_sources} high-quality sources")
+            
+            return "\n".join(explanation_parts)
             
         except Exception as e:
-            self.logger.error(f"Error creating confidence breakdown: {str(e)}")
-            return {
-                "base_confidence": base_confidence,
-                "enhanced_confidence": enhanced_confidence,
-                "error": str(e)
-            }
+            self.logger.error(f"Error generating confidence explanation: {str(e)}")
+            return f"Confidence: {enhanced_confidence:.2f}"
     
-    def format_confidence_for_ui(
-        self,
-        confidence_score: float,
-        citation_confidences: List[CitationConfidenceScore],
-        breakdown: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Format confidence information for UI display."""
-        try:
-            # Determine confidence level and color
-            if confidence_score >= 0.8:
-                level = "High"
-                color = "green"
-                icon = "✓"
-            elif confidence_score >= 0.6:
-                level = "Medium"
-                color = "orange"
-                icon = "~"
-            elif confidence_score >= 0.4:
-                level = "Low"
-                color = "red"
-                icon = "!"
-            else:
-                level = "Very Low"
-                color = "darkred"
-                icon = "⚠"
-            
-            # Create UI-friendly format
-            ui_format = {
-                "overall": {
-                    "score": confidence_score,
-                    "level": level,
-                    "color": color,
-                    "icon": icon,
-                    "display_text": f"{level} Confidence ({confidence_score:.2f})"
-                },
-                
-                "citations": [
-                    {
-                        "citation_id": cite.citation_id,
-                        "confidence": cite.confidence_score,
-                        "reliability": cite.reliability_score,
-                        "level": self._get_confidence_level(cite.confidence_score),
-                        "color": self._get_confidence_color(cite.confidence_score)
-                    }
-                    for cite in citation_confidences
-                ],
-                
-                "breakdown_summary": {
-                    "graph_evidence": breakdown.get("graph_evidence", {}).get("entity_support", 0.5),
-                    "source_reliability": breakdown.get("source_reliability", {}).get("average_reliability", 0.5),
-                    "improvement_from_base": breakdown.get("improvement", 0.0)
-                },
-                
-                "recommendations": self._generate_confidence_recommendations(
-                    confidence_score, breakdown
-                )
-            }
-            
-            return ui_format
-            
-        except Exception as e:
-            self.logger.error(f"Error formatting confidence for UI: {str(e)}")
-            return {
-                "overall": {
-                    "score": confidence_score,
-                    "level": "Unknown",
-                    "color": "gray",
-                    "icon": "?",
-                    "display_text": f"Confidence: {confidence_score:.2f}"
-                },
-                "error": str(e)
-            }
-    
-    def _get_confidence_level(self, score: float) -> str:
-        """Get confidence level string."""
-        if score >= 0.8:
+    def _get_confidence_level(self, confidence_score: float) -> str:
+        """Get confidence level description."""
+        if confidence_score >= self.high_confidence_threshold:
             return "High"
-        elif score >= 0.6:
+        elif confidence_score >= self.medium_confidence_threshold:
             return "Medium"
-        elif score >= 0.4:
+        elif confidence_score >= self.low_confidence_threshold:
             return "Low"
         else:
             return "Very Low"
     
-    def _get_confidence_color(self, score: float) -> str:
-        """Get confidence color for UI."""
-        if score >= 0.8:
-            return "green"
-        elif score >= 0.6:
-            return "orange"
-        elif score >= 0.4:
-            return "red"
-        else:
-            return "darkred"
-    
-    def _generate_confidence_recommendations(
+    def get_confidence_display_info(
         self,
-        confidence_score: float,
-        breakdown: Dict[str, Any]
-    ) -> List[str]:
-        """Generate recommendations for improving confidence."""
-        recommendations = []
+        confidence_breakdown: ConfidenceBreakdown
+    ) -> Dict[str, Any]:
+        """
+        Get information for displaying confidence in the UI.
         
+        Returns:
+            Dictionary with display information including colors, icons, and text
+        """
         try:
-            # Low overall confidence
-            if confidence_score < 0.6:
-                recommendations.append("Consider verifying information with additional sources")
+            confidence = confidence_breakdown.overall_confidence
+            level = self._get_confidence_level(confidence)
             
-            # Low source reliability
-            source_reliability = breakdown.get("source_reliability", {})
-            if source_reliability.get("average_reliability", 0.5) < 0.6:
-                recommendations.append("Some sources may have reliability issues - verify file accessibility")
+            # Color coding
+            if confidence >= self.high_confidence_threshold:
+                color = "green"
+                icon = "✓"
+            elif confidence >= self.medium_confidence_threshold:
+                color = "orange"
+                icon = "⚠"
+            elif confidence >= self.low_confidence_threshold:
+                color = "red"
+                icon = "⚠"
+            else:
+                color = "darkred"
+                icon = "✗"
             
-            # Low graph evidence
-            graph_evidence = breakdown.get("graph_evidence", {})
-            if graph_evidence.get("entity_support", 0.5) < 0.6:
-                recommendations.append("Limited entity support - consider additional context")
+            # Display text
+            display_text = f"{level} Confidence ({confidence:.1%})"
             
-            if graph_evidence.get("connectivity_score", 0.5) < 0.5:
-                recommendations.append("Low connectivity between concepts - information may be fragmented")
+            # Tooltip with detailed breakdown
+            tooltip = confidence_breakdown.explanation
             
-            # Citation issues
-            citation_confidence = breakdown.get("citation_confidence", {})
-            if citation_confidence.get("low_confidence_citations", 0) > 0:
-                recommendations.append("Some citations have low confidence - verify source quality")
-            
-            if not recommendations:
-                recommendations.append("Confidence level is acceptable for this response")
+            return {
+                "confidence_score": confidence,
+                "confidence_level": level,
+                "color": color,
+                "icon": icon,
+                "display_text": display_text,
+                "tooltip": tooltip,
+                "show_warning": confidence < self.medium_confidence_threshold
+            }
             
         except Exception as e:
-            self.logger.error(f"Error generating recommendations: {str(e)}")
-            recommendations = ["Unable to generate specific recommendations"]
-        
-        return recommendations
+            self.logger.error(f"Error getting confidence display info: {str(e)}")
+            return {
+                "confidence_score": 0.0,
+                "confidence_level": "Unknown",
+                "color": "gray",
+                "icon": "?",
+                "display_text": "Unknown Confidence",
+                "tooltip": "Error calculating confidence",
+                "show_warning": True
+            }
+
+
+# Alias for backward compatibility
+class ConfidenceScorer:
+    """Alias for LightRAGConfidenceScorer for backward compatibility."""
+    
+    def __init__(self, config=None):
+        self._scorer = LightRAGConfidenceScorer(config)
+    
+    def __getattr__(self, name):
+        return getattr(self._scorer, name)

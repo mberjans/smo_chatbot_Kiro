@@ -3,7 +3,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-from typing import List, Set
+from typing import List, Set, Dict, Any, Optional, Tuple
 from uuid import uuid4
 
 import pydot
@@ -16,6 +16,14 @@ from pybtex.plugin import find_plugin
 
 logger = logging.getLogger(__name__)
 #gard = GARD()
+
+# Import LightRAG citation formatter
+try:
+    from lightrag_integration.citation_formatter import LightRAGCitationFormatter, LightRAGCitationResult
+    LIGHTRAG_AVAILABLE = True
+except ImportError:
+    LIGHTRAG_AVAILABLE = False
+    logger.warning("LightRAG citation formatter not available")
 
 
 def onlineFullCitation(pmid: str, citation: str):
@@ -413,3 +421,296 @@ def get_source_order(content):
     source_order = re.findall(r"\[(\d+)\]", content)
     source_order = [int(source) for source in source_order]
     return source_order
+
+
+def format_lightrag_citations(
+    content: str,
+    source_documents: List[str],
+    entities_used: List[Dict[str, Any]],
+    relationships_used: List[Dict[str, Any]],
+    confidence_score: float,
+    config=None
+) -> Tuple[str, str]:
+    """
+    Format citations for LightRAG responses with PDF document sources.
+    
+    Args:
+        content: The response content to add citations to
+        source_documents: List of source document file paths
+        entities_used: List of entities used in the response
+        relationships_used: List of relationships used in the response
+        confidence_score: Overall response confidence score
+        config: Optional configuration object
+    
+    Returns:
+        Tuple of (formatted_content, bibliography)
+    """
+    if not LIGHTRAG_AVAILABLE:
+        logger.warning("LightRAG citation formatter not available, returning original content")
+        return content, ""
+    
+    try:
+        formatter = LightRAGCitationFormatter(config)
+        result = formatter.format_lightrag_citations(
+            content, source_documents, entities_used, relationships_used, confidence_score
+        )
+        
+        logger.info(f"Formatted LightRAG citations: {result.source_count} sources")
+        return result.formatted_content, result.bibliography
+        
+    except Exception as e:
+        logger.error(f"Error formatting LightRAG citations: {str(e)}", exc_info=True)
+        return content, f"Error generating bibliography: {str(e)}"
+
+
+def process_lightrag_response(response_data: Dict[str, Any], config=None) -> Tuple[str, str]:
+    """
+    Process a complete LightRAG response and format citations.
+    
+    Args:
+        response_data: Dictionary containing LightRAG response data with keys:
+            - answer: The response text
+            - source_documents: List of source document paths
+            - entities_used: List of entities used
+            - relationships_used: List of relationships used
+            - confidence_score: Overall confidence score
+        config: Optional configuration object
+    
+    Returns:
+        Tuple of (formatted_content, bibliography)
+    """
+    try:
+        content = response_data.get("answer", "")
+        source_documents = response_data.get("source_documents", [])
+        entities_used = response_data.get("entities_used", [])
+        relationships_used = response_data.get("relationships_used", [])
+        confidence_score = response_data.get("confidence_score", 0.0)
+        
+        return format_lightrag_citations(
+            content, source_documents, entities_used, 
+            relationships_used, confidence_score, config
+        )
+        
+    except Exception as e:
+        logger.error(f"Error processing LightRAG response: {str(e)}", exc_info=True)
+        return response_data.get("answer", ""), f"Error processing citations: {str(e)}"
+
+
+def merge_citation_systems(
+    lightrag_content: str,
+    lightrag_bibliography: str,
+    traditional_content: str,
+    traditional_bibliography: str
+) -> Tuple[str, str]:
+    """
+    Merge citations from LightRAG and traditional citation systems.
+    
+    This function is useful for hybrid responses that combine information
+    from both LightRAG (PDF sources) and other systems (e.g., Perplexity API).
+    
+    Args:
+        lightrag_content: Content with LightRAG citations
+        lightrag_bibliography: LightRAG bibliography
+        traditional_content: Content with traditional citations
+        traditional_bibliography: Traditional bibliography
+    
+    Returns:
+        Tuple of (merged_content, merged_bibliography)
+    """
+    try:
+        # Combine content
+        if lightrag_content and traditional_content:
+            merged_content = f"{traditional_content}\n\n**Additional Information from Knowledge Base:**\n{lightrag_content}"
+        elif lightrag_content:
+            merged_content = lightrag_content
+        else:
+            merged_content = traditional_content
+        
+        # Combine bibliographies
+        merged_bibliography = ""
+        if traditional_bibliography:
+            merged_bibliography += traditional_bibliography
+        
+        if lightrag_bibliography:
+            if merged_bibliography:
+                merged_bibliography += f"\n\n{lightrag_bibliography}"
+            else:
+                merged_bibliography = lightrag_bibliography
+        
+        return merged_content, merged_bibliography
+        
+    except Exception as e:
+        logger.error(f"Error merging citation systems: {str(e)}", exc_info=True)
+        # Return the best available content on error
+        content = lightrag_content or traditional_content or ""
+        bibliography = lightrag_bibliography or traditional_bibliography or ""
+        return content, bibliography
+
+
+def get_lightrag_citation_statistics(
+    source_documents: List[str],
+    entities_used: List[Dict[str, Any]],
+    relationships_used: List[Dict[str, Any]],
+    config=None
+) -> Dict[str, Any]:
+    """
+    Get statistics about LightRAG citations.
+    
+    Args:
+        source_documents: List of source document paths
+        entities_used: List of entities used
+        relationships_used: List of relationships used
+        config: Optional configuration object
+    
+    Returns:
+        Dictionary containing citation statistics
+    """
+    if not LIGHTRAG_AVAILABLE:
+        return {"error": "LightRAG citation formatter not available"}
+    
+    try:
+        formatter = LightRAGCitationFormatter(config)
+        
+        # Extract citations to get statistics
+        citations = formatter._extract_pdf_citations(
+            source_documents, entities_used, relationships_used
+        )
+        
+        return formatter.get_citation_statistics(citations)
+        
+    except Exception as e:
+        logger.error(f"Error getting LightRAG citation statistics: {str(e)}", exc_info=True)
+        return {"error": str(e)}
+
+
+def calculate_lightrag_confidence(
+    base_confidence: float,
+    source_documents: List[str],
+    entities_used: List[Dict[str, Any]],
+    relationships_used: List[Dict[str, Any]],
+    query_context: Optional[Dict[str, Any]] = None,
+    config=None
+) -> Tuple[float, Dict[str, Any]]:
+    """
+    Calculate enhanced confidence score for LightRAG responses.
+    
+    Args:
+        base_confidence: Base confidence from query processing
+        source_documents: List of source document paths
+        entities_used: List of entities used in the response
+        relationships_used: List of relationships used in the response
+        query_context: Optional context about the query
+        config: Optional configuration object
+    
+    Returns:
+        Tuple of (enhanced_confidence, confidence_breakdown_dict)
+    """
+    if not LIGHTRAG_AVAILABLE:
+        logger.warning("LightRAG confidence scoring not available")
+        return base_confidence, {"error": "Confidence scoring not available"}
+    
+    try:
+        from lightrag_integration.confidence_scoring import LightRAGConfidenceScorer
+        
+        scorer = LightRAGConfidenceScorer(config)
+        breakdown = scorer.calculate_response_confidence(
+            base_confidence, source_documents, entities_used, relationships_used, query_context
+        )
+        
+        # Convert breakdown to dictionary for serialization
+        breakdown_dict = {
+            "overall_confidence": breakdown.overall_confidence,
+            "base_confidence": breakdown.base_confidence,
+            "enhancement_factor": breakdown.enhancement_factor,
+            "explanation": breakdown.explanation,
+            "source_scores": breakdown.source_scores,
+            "entity_scores": breakdown.entity_scores,
+            "relationship_scores": breakdown.relationship_scores,
+            "confidence_factors": {
+                "entity_confidence": breakdown.confidence_factors.entity_confidence,
+                "relationship_confidence": breakdown.confidence_factors.relationship_confidence,
+                "source_reliability": breakdown.confidence_factors.source_reliability,
+                "graph_connectivity": breakdown.confidence_factors.graph_connectivity,
+                "evidence_consistency": breakdown.confidence_factors.evidence_consistency,
+                "citation_quality": breakdown.confidence_factors.citation_quality,
+                "temporal_relevance": breakdown.confidence_factors.temporal_relevance
+            }
+        }
+        
+        logger.info(f"Enhanced confidence: {breakdown.overall_confidence:.3f} (base: {base_confidence:.3f})")
+        return breakdown.overall_confidence, breakdown_dict
+        
+    except Exception as e:
+        logger.error(f"Error calculating LightRAG confidence: {str(e)}", exc_info=True)
+        return base_confidence, {"error": str(e)}
+
+
+def get_lightrag_confidence_display_info(
+    confidence_score: float,
+    confidence_breakdown: Optional[Dict[str, Any]] = None,
+    config=None
+) -> Dict[str, Any]:
+    """
+    Get display information for LightRAG confidence scores.
+    
+    Args:
+        confidence_score: The confidence score to display
+        confidence_breakdown: Optional detailed confidence breakdown
+        config: Optional configuration object
+    
+    Returns:
+        Dictionary with display information (color, icon, text, tooltip)
+    """
+    if not LIGHTRAG_AVAILABLE:
+        return {
+            "confidence_score": confidence_score,
+            "confidence_level": "Unknown",
+            "color": "gray",
+            "icon": "?",
+            "display_text": f"Confidence: {confidence_score:.1%}",
+            "tooltip": "Confidence scoring not available",
+            "show_warning": True
+        }
+    
+    try:
+        from lightrag_integration.confidence_scoring import LightRAGConfidenceScorer, ConfidenceBreakdown, ConfidenceFactors
+        
+        scorer = LightRAGConfidenceScorer(config)
+        
+        # Create a minimal breakdown if not provided
+        if confidence_breakdown:
+            breakdown = ConfidenceBreakdown(
+                overall_confidence=confidence_breakdown.get("overall_confidence", confidence_score),
+                base_confidence=confidence_breakdown.get("base_confidence", confidence_score),
+                enhancement_factor=confidence_breakdown.get("enhancement_factor", 0.0),
+                confidence_factors=ConfidenceFactors(**confidence_breakdown.get("confidence_factors", {})),
+                source_scores=confidence_breakdown.get("source_scores", {}),
+                entity_scores=confidence_breakdown.get("entity_scores", {}),
+                relationship_scores=confidence_breakdown.get("relationship_scores", {}),
+                explanation=confidence_breakdown.get("explanation", "")
+            )
+        else:
+            breakdown = ConfidenceBreakdown(
+                overall_confidence=confidence_score,
+                base_confidence=confidence_score,
+                enhancement_factor=0.0,
+                confidence_factors=ConfidenceFactors(),
+                source_scores={},
+                entity_scores={},
+                relationship_scores={},
+                explanation=f"Confidence: {confidence_score:.2f}"
+            )
+        
+        return scorer.get_confidence_display_info(breakdown)
+        
+    except Exception as e:
+        logger.error(f"Error getting confidence display info: {str(e)}", exc_info=True)
+        return {
+            "confidence_score": confidence_score,
+            "confidence_level": "Error",
+            "color": "red",
+            "icon": "!",
+            "display_text": f"Confidence: {confidence_score:.1%}",
+            "tooltip": f"Error: {str(e)}",
+            "show_warning": True
+        }

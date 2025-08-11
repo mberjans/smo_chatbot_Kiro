@@ -269,7 +269,7 @@ class BiomedicaEntityExtractor:
             self.logger.error(f"Error extracting entities: {str(e)}", exc_info=True)
             return []
     
-    async def _extract_spacy_entities(self, doc: Doc, context: Optional[str]) -> List[Entity]:
+    async def _extract_spacy_entities(self, doc: Any, context: Optional[str]) -> List[Entity]:
         """Extract entities using spaCy's built-in NER."""
         entities = []
         
@@ -317,7 +317,7 @@ class BiomedicaEntityExtractor:
         
         return mapping.get(spacy_label)
     
-    async def _extract_pattern_entities(self, doc: Doc, context: Optional[str]) -> List[Entity]:
+    async def _extract_pattern_entities(self, doc: Any, context: Optional[str]) -> List[Entity]:
         """Extract entities using custom patterns."""
         entities = []
         
@@ -346,7 +346,7 @@ class BiomedicaEntityExtractor:
         
         return entities
     
-    async def _extract_vocabulary_entities(self, doc: Doc, context: Optional[str]) -> List[Entity]:
+    async def _extract_vocabulary_entities(self, doc: Any, context: Optional[str]) -> List[Entity]:
         """Extract entities based on metabolomics vocabulary."""
         entities = []
         

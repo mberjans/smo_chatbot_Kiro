@@ -119,16 +119,16 @@ class ErrorHandler:
         
         # Default retry configuration
         self.default_retry_config = RetryConfig(
-            max_attempts=self.config.get('max_retry_attempts', 3),
-            base_delay=self.config.get('base_retry_delay', 1.0),
-            max_delay=self.config.get('max_retry_delay', 60.0),
-            exponential_base=self.config.get('exponential_base', 2.0),
-            jitter=self.config.get('retry_jitter', True)
+            max_attempts=getattr(self.config, 'max_retry_attempts', 3),
+            base_delay=getattr(self.config, 'base_retry_delay', 1.0),
+            max_delay=getattr(self.config, 'max_retry_delay', 60.0),
+            exponential_base=getattr(self.config, 'exponential_base', 2.0),
+            jitter=getattr(self.config, 'retry_jitter', True)
         )
         
         # Circuit breaker configuration
-        self.circuit_breaker_threshold = self.config.get('circuit_breaker_threshold', 5)
-        self.circuit_breaker_timeout = self.config.get('circuit_breaker_timeout', 300)  # 5 minutes
+        self.circuit_breaker_threshold = getattr(self.config, 'circuit_breaker_threshold', 5)
+        self.circuit_breaker_timeout = getattr(self.config, 'circuit_breaker_timeout', 300)  # 5 minutes
         
         self.logger.info("Error handler initialized with config: %s", self.config)
     
@@ -367,7 +367,12 @@ class ErrorHandler:
                 "error_type": "file_not_found",
                 "recovery_action": "skip_file",
                 "message": f"PDF file not found: {pdf_path}",
-                "should_retry": False
+                "should_retry": False,
+                "recovery_suggestions": [
+                    "Verify the file path is correct",
+                    "Check if the file was moved or deleted",
+                    "Ensure the file system is accessible"
+                ]
             }
         
         elif isinstance(error, PermissionError):
@@ -376,46 +381,100 @@ class ErrorHandler:
                 "error_type": "permission_denied",
                 "recovery_action": "skip_file",
                 "message": f"Permission denied accessing PDF: {pdf_path}",
-                "should_retry": False
+                "should_retry": False,
+                "recovery_suggestions": [
+                    "Check file permissions",
+                    "Ensure the process has read access",
+                    "Verify directory permissions"
+                ]
             }
         
-        elif "corrupted" in str(error).lower() or "invalid" in str(error).lower():
+        elif "corrupted" in str(error).lower() or "invalid" in str(error).lower() or "damaged" in str(error).lower():
             return {
                 "success": False,
                 "error_type": "corrupted_file",
-                "recovery_action": "skip_file",
+                "recovery_action": "try_alternative_parser",
                 "message": f"Corrupted or invalid PDF: {pdf_path}",
-                "should_retry": False
+                "should_retry": True,
+                "retry_delay": 2,
+                "recovery_suggestions": [
+                    "Try alternative PDF parsing method",
+                    "Check if file can be repaired",
+                    "Verify file integrity"
+                ]
             }
         
-        elif isinstance(error, MemoryError):
+        elif isinstance(error, MemoryError) or "memory" in str(error).lower():
             return {
                 "success": False,
                 "error_type": "memory_error",
                 "recovery_action": "retry_with_smaller_batch",
                 "message": f"Memory error processing PDF: {pdf_path}",
                 "should_retry": True,
-                "retry_delay": 30
+                "retry_delay": 30,
+                "recovery_suggestions": [
+                    "Process file in smaller chunks",
+                    "Reduce batch size",
+                    "Free up system memory",
+                    "Process file individually"
+                ]
+            }
+        
+        elif "timeout" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "timeout_error",
+                "recovery_action": "retry_with_longer_timeout",
+                "message": f"Timeout processing PDF: {pdf_path}",
+                "should_retry": True,
+                "retry_delay": 10,
+                "recovery_suggestions": [
+                    "Increase processing timeout",
+                    "Process file during low-load periods",
+                    "Check system performance"
+                ]
+            }
+        
+        elif "encoding" in str(error).lower() or "decode" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "encoding_error",
+                "recovery_action": "try_alternative_encoding",
+                "message": f"Text encoding error in PDF: {pdf_path}",
+                "should_retry": True,
+                "retry_delay": 2,
+                "recovery_suggestions": [
+                    "Try different text encoding methods",
+                    "Use OCR for scanned documents",
+                    "Check document language settings"
+                ]
             }
         
         else:
-            # Generic error - allow retry
+            # Generic error - allow retry with progressive backoff
             return {
                 "success": False,
                 "error_type": "generic_error",
-                "recovery_action": "retry",
+                "recovery_action": "retry_with_backoff",
                 "message": f"Error processing PDF {pdf_path}: {str(error)}",
                 "should_retry": True,
-                "retry_delay": 5
+                "retry_delay": 5,
+                "recovery_suggestions": [
+                    "Check system resources",
+                    "Verify file accessibility",
+                    "Review error logs for details",
+                    "Try processing file individually"
+                ]
             }
     
-    def handle_knowledge_graph_error(self, error: Exception, operation: str) -> Dict[str, Any]:
+    def handle_knowledge_graph_error(self, error: Exception, operation: str, context_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Handle knowledge graph construction errors.
         
         Args:
             error: The exception that occurred
             operation: The KG operation being performed
+            context_data: Additional context about the operation
         
         Returns:
             Dictionary with error handling result
@@ -423,7 +482,7 @@ class ErrorHandler:
         context = ErrorContext(
             operation=f"knowledge_graph_{operation}",
             component="knowledge_graph",
-            input_data={"operation": operation}
+            input_data={"operation": operation, **(context_data or {})}
         )
         
         error_record = self._create_error_record(
@@ -431,53 +490,127 @@ class ErrorHandler:
         )
         self._track_error(error_record)
         
-        # Determine recovery strategy
-        if "storage" in str(error).lower() or "disk" in str(error).lower():
+        # Determine recovery strategy based on error type and operation
+        if "storage" in str(error).lower() or "disk" in str(error).lower() or "space" in str(error).lower():
             return {
                 "success": False,
                 "error_type": "storage_error",
-                "recovery_action": "retry_with_cleanup",
+                "recovery_action": "cleanup_and_retry",
                 "message": f"Storage error in KG operation {operation}: {str(error)}",
                 "should_retry": True,
-                "retry_delay": 10
+                "retry_delay": 10,
+                "recovery_suggestions": [
+                    "Clean up temporary files",
+                    "Check available disk space",
+                    "Optimize storage usage",
+                    "Consider incremental processing"
+                ]
             }
         
-        elif "memory" in str(error).lower():
+        elif "memory" in str(error).lower() or isinstance(error, MemoryError):
             return {
                 "success": False,
                 "error_type": "memory_error",
                 "recovery_action": "process_in_smaller_chunks",
                 "message": f"Memory error in KG operation {operation}: {str(error)}",
                 "should_retry": True,
-                "retry_delay": 30
+                "retry_delay": 30,
+                "recovery_suggestions": [
+                    "Process entities in smaller batches",
+                    "Reduce concurrent operations",
+                    "Clear memory caches",
+                    "Use streaming processing"
+                ]
             }
         
-        elif "validation" in str(error).lower():
+        elif "validation" in str(error).lower() or "invalid" in str(error).lower():
             return {
                 "success": False,
                 "error_type": "validation_error",
-                "recovery_action": "skip_invalid_data",
+                "recovery_action": "sanitize_and_retry",
                 "message": f"Validation error in KG operation {operation}: {str(error)}",
-                "should_retry": False
+                "should_retry": True,
+                "retry_delay": 5,
+                "recovery_suggestions": [
+                    "Validate input data format",
+                    "Sanitize entity names and relationships",
+                    "Check data type constraints",
+                    "Skip malformed entries"
+                ]
+            }
+        
+        elif "connection" in str(error).lower() or "network" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "connection_error",
+                "recovery_action": "reconnect_and_retry",
+                "message": f"Connection error in KG operation {operation}: {str(error)}",
+                "should_retry": True,
+                "retry_delay": 15,
+                "recovery_suggestions": [
+                    "Check database connectivity",
+                    "Verify network configuration",
+                    "Restart database connection",
+                    "Use connection pooling"
+                ]
+            }
+        
+        elif "timeout" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "timeout_error",
+                "recovery_action": "retry_with_longer_timeout",
+                "message": f"Timeout in KG operation {operation}: {str(error)}",
+                "should_retry": True,
+                "retry_delay": 20,
+                "recovery_suggestions": [
+                    "Increase operation timeout",
+                    "Process in smaller transactions",
+                    "Optimize query performance",
+                    "Check system load"
+                ]
+            }
+        
+        elif "duplicate" in str(error).lower() or "exists" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "duplicate_error",
+                "recovery_action": "merge_or_skip",
+                "message": f"Duplicate data in KG operation {operation}: {str(error)}",
+                "should_retry": True,
+                "retry_delay": 2,
+                "recovery_suggestions": [
+                    "Check for existing entities",
+                    "Implement merge logic",
+                    "Use upsert operations",
+                    "Generate unique identifiers"
+                ]
             }
         
         else:
             return {
                 "success": False,
                 "error_type": "generic_kg_error",
-                "recovery_action": "retry",
+                "recovery_action": "retry_with_backoff",
                 "message": f"Error in KG operation {operation}: {str(error)}",
                 "should_retry": True,
-                "retry_delay": 15
+                "retry_delay": 15,
+                "recovery_suggestions": [
+                    "Check system resources",
+                    "Review operation parameters",
+                    "Verify data integrity",
+                    "Consider alternative approach"
+                ]
             }
     
-    def handle_query_processing_error(self, error: Exception, query: str) -> Dict[str, Any]:
+    def handle_query_processing_error(self, error: Exception, query: str, query_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Handle query processing errors with fallback strategies.
         
         Args:
             error: The exception that occurred
             query: The query being processed
+            query_context: Additional context about the query
         
         Returns:
             Dictionary with error handling result
@@ -485,7 +618,11 @@ class ErrorHandler:
         context = ErrorContext(
             operation="query_processing",
             component="query_engine",
-            input_data={"query_length": len(query)}
+            input_data={
+                "query_length": len(query),
+                "query_hash": hash(query),
+                **(query_context or {})
+            }
         )
         
         error_record = self._create_error_record(
@@ -493,35 +630,123 @@ class ErrorHandler:
         )
         self._track_error(error_record)
         
-        # Determine recovery strategy
-        if "timeout" in str(error).lower():
+        # Determine recovery strategy based on error type
+        if "timeout" in str(error).lower() or isinstance(error, asyncio.TimeoutError):
             return {
                 "success": False,
                 "error_type": "timeout_error",
                 "recovery_action": "retry_with_simpler_query",
                 "message": f"Query timeout: {str(error)}",
                 "should_retry": True,
-                "fallback_available": True
+                "retry_delay": 5,
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Simplify query complexity",
+                    "Increase query timeout",
+                    "Use cached results if available",
+                    "Fall back to external API"
+                ]
             }
         
-        elif "memory" in str(error).lower():
+        elif "memory" in str(error).lower() or isinstance(error, MemoryError):
             return {
                 "success": False,
                 "error_type": "memory_error",
                 "recovery_action": "retry_with_limited_scope",
                 "message": f"Memory error during query processing: {str(error)}",
                 "should_retry": True,
-                "fallback_available": True
+                "retry_delay": 10,
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Limit search scope",
+                    "Reduce result set size",
+                    "Clear query caches",
+                    "Use streaming results"
+                ]
             }
         
-        elif "graph" in str(error).lower() and "not found" in str(error).lower():
+        elif ("graph" in str(error).lower() and "not found" in str(error).lower()) or \
+             ("empty" in str(error).lower() and "knowledge" in str(error).lower()):
             return {
                 "success": False,
                 "error_type": "no_graph_data",
                 "recovery_action": "fallback_to_external_api",
-                "message": "No knowledge graph data available",
+                "message": "No knowledge graph data available for query",
                 "should_retry": False,
-                "fallback_available": True
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Check if documents have been ingested",
+                    "Verify knowledge graph construction",
+                    "Use external API as fallback",
+                    "Suggest document ingestion"
+                ]
+            }
+        
+        elif "parse" in str(error).lower() or "syntax" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "query_parse_error",
+                "recovery_action": "sanitize_and_retry",
+                "message": f"Query parsing error: {str(error)}",
+                "should_retry": True,
+                "retry_delay": 2,
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Sanitize query text",
+                    "Remove special characters",
+                    "Simplify query structure",
+                    "Use alternative query format"
+                ]
+            }
+        
+        elif "connection" in str(error).lower() or "network" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "connection_error",
+                "recovery_action": "reconnect_and_retry",
+                "message": f"Connection error during query: {str(error)}",
+                "should_retry": True,
+                "retry_delay": 15,
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Check database connectivity",
+                    "Verify network status",
+                    "Restart connections",
+                    "Use cached results"
+                ]
+            }
+        
+        elif "rate" in str(error).lower() and "limit" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "rate_limit_error",
+                "recovery_action": "retry_with_delay",
+                "message": f"Rate limit exceeded: {str(error)}",
+                "should_retry": True,
+                "retry_delay": 60,
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Wait for rate limit reset",
+                    "Reduce query frequency",
+                    "Use query batching",
+                    "Implement query queuing"
+                ]
+            }
+        
+        elif "permission" in str(error).lower() or "unauthorized" in str(error).lower():
+            return {
+                "success": False,
+                "error_type": "permission_error",
+                "recovery_action": "fallback_to_external_api",
+                "message": f"Permission denied for query: {str(error)}",
+                "should_retry": False,
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Check access permissions",
+                    "Verify authentication",
+                    "Use alternative data source",
+                    "Contact system administrator"
+                ]
             }
         
         else:
@@ -531,7 +756,14 @@ class ErrorHandler:
                 "recovery_action": "fallback_to_external_api",
                 "message": f"Query processing error: {str(error)}",
                 "should_retry": True,
-                "fallback_available": True
+                "retry_delay": 5,
+                "fallback_available": True,
+                "recovery_suggestions": [
+                    "Check system status",
+                    "Verify query format",
+                    "Use external API fallback",
+                    "Review error logs"
+                ]
             }
     
     def get_error_statistics(self) -> Dict[str, Any]:
@@ -697,6 +929,283 @@ class ErrorHandler:
             {"error_type": error_type, "count": count}
             for error_type, count in sorted_errors[:limit]
         ]
+    
+    async def recover_from_storage_error(self, operation: str, context_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Attempt to recover from storage-related errors.
+        
+        Args:
+            operation: The operation that failed
+            context_data: Additional context about the failure
+        
+        Returns:
+            Recovery result dictionary
+        """
+        self.logger.info(f"Attempting storage error recovery for operation: {operation}")
+        
+        recovery_actions = []
+        
+        try:
+            # Check available disk space
+            import shutil
+            if hasattr(self, 'config') and hasattr(self.config, 'cache_directory'):
+                cache_dir = self.config.cache_directory
+                total, used, free = shutil.disk_usage(cache_dir)
+                free_gb = free / (1024**3)
+                
+                if free_gb < 1.0:  # Less than 1GB free
+                    recovery_actions.append("cleanup_cache")
+                    self.logger.warning(f"Low disk space: {free_gb:.2f}GB free")
+                
+                # Clean up old cache files if needed
+                if "cleanup_cache" in recovery_actions:
+                    await self._cleanup_cache_directory(cache_dir)
+                    recovery_actions.append("cache_cleaned")
+            
+            # Check for write permissions
+            import tempfile
+            import os
+            
+            try:
+                with tempfile.NamedTemporaryFile(delete=True) as tmp:
+                    tmp.write(b"test")
+                    tmp.flush()
+                recovery_actions.append("write_permission_ok")
+            except Exception as e:
+                recovery_actions.append(f"write_permission_failed: {str(e)}")
+            
+            return {
+                "success": True,
+                "recovery_actions": recovery_actions,
+                "message": f"Storage recovery completed for {operation}",
+                "can_retry": True
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Storage recovery failed: {str(e)}")
+            return {
+                "success": False,
+                "recovery_actions": recovery_actions,
+                "message": f"Storage recovery failed: {str(e)}",
+                "can_retry": False
+            }
+    
+    async def recover_from_memory_error(self, operation: str, context_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Attempt to recover from memory-related errors.
+        
+        Args:
+            operation: The operation that failed
+            context_data: Additional context about the failure
+        
+        Returns:
+            Recovery result dictionary
+        """
+        self.logger.info(f"Attempting memory error recovery for operation: {operation}")
+        
+        recovery_actions = []
+        
+        try:
+            # Force garbage collection
+            import gc
+            collected = gc.collect()
+            recovery_actions.append(f"garbage_collected: {collected} objects")
+            
+            # Get memory usage info
+            import psutil
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            memory_mb = memory_info.rss / (1024 * 1024)
+            
+            recovery_actions.append(f"current_memory_usage: {memory_mb:.1f}MB")
+            
+            # Clear any caches if available
+            if hasattr(self, '_clear_caches'):
+                await self._clear_caches()
+                recovery_actions.append("caches_cleared")
+            
+            # Suggest processing parameters
+            suggested_params = {}
+            if context_data:
+                if "batch_size" in context_data:
+                    suggested_params["batch_size"] = max(1, context_data["batch_size"] // 2)
+                if "chunk_size" in context_data:
+                    suggested_params["chunk_size"] = max(100, context_data["chunk_size"] // 2)
+            
+            return {
+                "success": True,
+                "recovery_actions": recovery_actions,
+                "message": f"Memory recovery completed for {operation}",
+                "can_retry": True,
+                "suggested_params": suggested_params
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Memory recovery failed: {str(e)}")
+            return {
+                "success": False,
+                "recovery_actions": recovery_actions,
+                "message": f"Memory recovery failed: {str(e)}",
+                "can_retry": False
+            }
+    
+    async def recover_from_connection_error(self, operation: str, context_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Attempt to recover from connection-related errors.
+        
+        Args:
+            operation: The operation that failed
+            context_data: Additional context about the failure
+        
+        Returns:
+            Recovery result dictionary
+        """
+        self.logger.info(f"Attempting connection error recovery for operation: {operation}")
+        
+        recovery_actions = []
+        
+        try:
+            # Test basic connectivity
+            import socket
+            
+            # Test localhost connectivity
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                result = sock.connect_ex(('localhost', 80))
+                sock.close()
+                if result == 0:
+                    recovery_actions.append("localhost_connectivity_ok")
+                else:
+                    recovery_actions.append("localhost_connectivity_failed")
+            except Exception as e:
+                recovery_actions.append(f"localhost_test_failed: {str(e)}")
+            
+            # Wait for potential network recovery
+            await asyncio.sleep(2)
+            recovery_actions.append("waited_for_network_recovery")
+            
+            return {
+                "success": True,
+                "recovery_actions": recovery_actions,
+                "message": f"Connection recovery completed for {operation}",
+                "can_retry": True,
+                "retry_delay": 10
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Connection recovery failed: {str(e)}")
+            return {
+                "success": False,
+                "recovery_actions": recovery_actions,
+                "message": f"Connection recovery failed: {str(e)}",
+                "can_retry": False
+            }
+    
+    async def _cleanup_cache_directory(self, cache_dir: str) -> None:
+        """Clean up old files in cache directory."""
+        try:
+            import os
+            import time
+            from pathlib import Path
+            
+            cache_path = Path(cache_dir)
+            if not cache_path.exists():
+                return
+            
+            # Remove files older than 24 hours
+            cutoff_time = time.time() - (24 * 60 * 60)
+            removed_count = 0
+            
+            for file_path in cache_path.rglob("*"):
+                if file_path.is_file():
+                    try:
+                        if file_path.stat().st_mtime < cutoff_time:
+                            file_path.unlink()
+                            removed_count += 1
+                    except Exception as e:
+                        self.logger.warning(f"Failed to remove cache file {file_path}: {str(e)}")
+            
+            self.logger.info(f"Cleaned up {removed_count} old cache files")
+            
+        except Exception as e:
+            self.logger.error(f"Cache cleanup failed: {str(e)}")
+    
+    def get_recovery_recommendations(self, error_category: ErrorCategory, error_count: int = 1) -> List[str]:
+        """
+        Get recovery recommendations based on error patterns.
+        
+        Args:
+            error_category: The category of errors
+            error_count: Number of similar errors recently
+        
+        Returns:
+            List of recovery recommendations
+        """
+        recommendations = []
+        
+        if error_category == ErrorCategory.PDF_PROCESSING:
+            recommendations.extend([
+                "Verify PDF file integrity and format",
+                "Check available system memory",
+                "Ensure proper file permissions",
+                "Consider processing files in smaller batches"
+            ])
+            
+            if error_count > 3:
+                recommendations.extend([
+                    "Review PDF file quality and sources",
+                    "Consider alternative PDF parsing libraries",
+                    "Implement pre-processing validation"
+                ])
+        
+        elif error_category == ErrorCategory.KNOWLEDGE_GRAPH:
+            recommendations.extend([
+                "Check database connectivity and permissions",
+                "Verify available storage space",
+                "Monitor memory usage during operations",
+                "Validate input data format and structure"
+            ])
+            
+            if error_count > 3:
+                recommendations.extend([
+                    "Consider database optimization",
+                    "Implement incremental processing",
+                    "Review entity extraction accuracy"
+                ])
+        
+        elif error_category == ErrorCategory.QUERY_PROCESSING:
+            recommendations.extend([
+                "Verify knowledge graph data availability",
+                "Check query format and complexity",
+                "Monitor system resource usage",
+                "Ensure external API connectivity"
+            ])
+            
+            if error_count > 3:
+                recommendations.extend([
+                    "Implement query caching",
+                    "Optimize query processing algorithms",
+                    "Consider query complexity limits"
+                ])
+        
+        elif error_category == ErrorCategory.NETWORK:
+            recommendations.extend([
+                "Check network connectivity",
+                "Verify API endpoints and credentials",
+                "Monitor rate limiting",
+                "Implement connection pooling"
+            ])
+        
+        elif error_category == ErrorCategory.STORAGE:
+            recommendations.extend([
+                "Check available disk space",
+                "Verify write permissions",
+                "Monitor I/O performance",
+                "Implement storage cleanup procedures"
+            ])
+        
+        return recommendations
 
 
 # Convenience functions for common error handling patterns

@@ -482,6 +482,7 @@ async def main():
         response = await component.query("What is clinical metabolomics?")
         print(f"Answer: {response.answer}")
         print(f"Confidence: {response.confidence_score}")
+        print(f"Sources: {response.source_documents}")
         
     finally:
         await component.cleanup()
@@ -495,6 +496,7 @@ if __name__ == "__main__":
 ```python
 import chainlit as cl
 from lightrag_integration.component import LightRAGComponent
+from lightrag_integration.config.settings import LightRAGConfig
 
 component = None
 
@@ -504,11 +506,280 @@ async def start():
     config = LightRAGConfig()
     component = LightRAGComponent(config)
     await component.initialize()
+    
+    await cl.Message(
+        content="Welcome! I'm ready to answer questions about clinical metabolomics."
+    ).send()
 
 @cl.on_message
 async def main(message: cl.Message):
-    response = await component.query(message.content)
-    await cl.Message(content=response.answer).send()
+    try:
+        response = await component.query(message.content)
+        
+        # Create response with citations
+        content = response.answer
+        if response.citations:
+            content += "\n\n**Sources:**\n"
+            for i, citation in enumerate(response.citations, 1):
+                content += f"{i}. {citation.title} - {citation.source}\n"
+        
+        await cl.Message(
+            content=content,
+            metadata={
+                "confidence": response.confidence_score,
+                "processing_time": response.processing_time,
+                "entities_used": len(response.entities_used)
+            }
+        ).send()
+        
+    except Exception as e:
+        await cl.Message(
+            content=f"I encountered an error: {str(e)}. Please try again."
+        ).send()
+
+@cl.on_stop
+async def stop():
+    global component
+    if component:
+        await component.cleanup()
 ```
 
-This API documentation provides comprehensive coverage of all LightRAG integration components and their usage patterns.
+### Advanced Usage with Error Handling
+
+```python
+import asyncio
+import logging
+from lightrag_integration.component import LightRAGComponent
+from lightrag_integration.config.settings import LightRAGConfig
+from lightrag_integration.error_handling import LightRAGError
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+async def robust_query_example():
+    """Example showing robust error handling and monitoring"""
+    config = LightRAGConfig()
+    component = LightRAGComponent(config)
+    
+    try:
+        # Initialize with health check
+        await component.initialize()
+        health = await component.get_health_status()
+        
+        if health.status != "healthy":
+            logger.warning(f"System health: {health.status}")
+            for component_name, status in health.components.items():
+                logger.info(f"  {component_name}: {status}")
+        
+        # Process multiple queries with error handling
+        queries = [
+            "What is clinical metabolomics?",
+            "How are metabolites analyzed?",
+            "What are biomarkers in metabolomics?"
+        ]
+        
+        for query in queries:
+            try:
+                logger.info(f"Processing query: {query}")
+                response = await component.query(query)
+                
+                logger.info(f"Response received in {response.processing_time:.2f}s")
+                logger.info(f"Confidence: {response.confidence_score:.2f}")
+                logger.info(f"Sources: {len(response.source_documents)}")
+                
+                print(f"\nQ: {query}")
+                print(f"A: {response.answer}")
+                print(f"Confidence: {response.confidence_score:.2f}")
+                
+            except LightRAGError as e:
+                logger.error(f"LightRAG error for query '{query}': {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error for query '{query}': {e}")
+        
+    except Exception as e:
+        logger.error(f"Component initialization failed: {e}")
+    
+    finally:
+        await component.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(robust_query_example())
+```
+
+### Batch Processing Example
+
+```python
+import asyncio
+from pathlib import Path
+from lightrag_integration.ingestion.pipeline import PDFIngestionPipeline
+from lightrag_integration.config.settings import LightRAGConfig
+
+async def batch_ingestion_example():
+    """Example of batch PDF processing"""
+    config = LightRAGConfig()
+    pipeline = PDFIngestionPipeline(config)
+    
+    # Process all PDFs in papers directory
+    papers_dir = Path("papers")
+    if papers_dir.exists():
+        print(f"Processing PDFs in {papers_dir}")
+        results = await pipeline.process_directory(str(papers_dir))
+        
+        successful = sum(1 for r in results if r.success)
+        failed = len(results) - successful
+        
+        print(f"Processing complete: {successful} successful, {failed} failed")
+        
+        # Show statistics
+        stats = pipeline.get_statistics()
+        print(f"Total documents processed: {stats.get('total_documents', 0)}")
+        print(f"Total entities extracted: {stats.get('total_entities', 0)}")
+        print(f"Average processing time: {stats.get('avg_processing_time', 0):.2f}s")
+    else:
+        print(f"Papers directory {papers_dir} not found")
+
+if __name__ == "__main__":
+    asyncio.run(batch_ingestion_example())
+```
+
+### Monitoring and Health Checks
+
+```python
+import asyncio
+from lightrag_integration.monitoring import HealthMonitor
+from lightrag_integration.config.settings import LightRAGConfig
+
+async def monitoring_example():
+    """Example of system monitoring"""
+    config = LightRAGConfig()
+    monitor = HealthMonitor(config)
+    
+    # Get comprehensive health status
+    health = await monitor.get_health_status()
+    print(f"System Status: {health.status}")
+    print(f"Uptime: {health.uptime:.2f} seconds")
+    
+    print("\nComponent Health:")
+    for component, status in health.components.items():
+        print(f"  {component}: {status}")
+    
+    print("\nPerformance Metrics:")
+    metrics = await monitor.get_performance_metrics()
+    for metric, value in metrics.items():
+        print(f"  {metric}: {value}")
+    
+    # Check specific component
+    component_health = await monitor.check_component_health("query_engine")
+    print(f"\nQuery Engine Health: {component_health}")
+
+if __name__ == "__main__":
+    asyncio.run(monitoring_example())
+```
+
+### Configuration Management
+
+```python
+from lightrag_integration.config.settings import LightRAGConfig
+import os
+
+def configuration_example():
+    """Example of configuration management"""
+    
+    # Load configuration from environment variables
+    config = LightRAGConfig()
+    print(f"Knowledge graph path: {config.knowledge_graph_path}")
+    print(f"Embedding model: {config.embedding_model}")
+    print(f"Batch size: {config.batch_size}")
+    
+    # Override specific settings
+    custom_config = LightRAGConfig(
+        batch_size=16,  # Smaller batch for limited memory
+        max_concurrent_requests=5,  # Reduce concurrency
+        cache_ttl_seconds=7200  # Longer cache TTL
+    )
+    
+    print(f"\nCustom configuration:")
+    print(f"Batch size: {custom_config.batch_size}")
+    print(f"Max concurrent: {custom_config.max_concurrent_requests}")
+    print(f"Cache TTL: {custom_config.cache_ttl_seconds}")
+    
+    # Environment-specific configuration
+    env = os.getenv("DEPLOYMENT_ENV", "development")
+    if env == "production":
+        production_config = LightRAGConfig(
+            batch_size=32,
+            max_concurrent_requests=20,
+            cache_ttl_seconds=3600
+        )
+        print(f"\nProduction configuration loaded")
+    elif env == "development":
+        dev_config = LightRAGConfig(
+            batch_size=8,
+            max_concurrent_requests=3,
+            cache_ttl_seconds=1800
+        )
+        print(f"\nDevelopment configuration loaded")
+
+if __name__ == "__main__":
+    configuration_example()
+```
+
+## SDK Usage Patterns
+
+### Synchronous Wrapper
+
+For applications that need synchronous interfaces:
+
+```python
+import asyncio
+from lightrag_integration.component import LightRAGComponent
+from lightrag_integration.config.settings import LightRAGConfig
+
+class LightRAGSync:
+    """Synchronous wrapper for LightRAG component"""
+    
+    def __init__(self, config: LightRAGConfig = None):
+        self.config = config or LightRAGConfig()
+        self.component = None
+        self.loop = None
+    
+    def __enter__(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.component = LightRAGComponent(self.config)
+        self.loop.run_until_complete(self.component.initialize())
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.component:
+            self.loop.run_until_complete(self.component.cleanup())
+        if self.loop:
+            self.loop.close()
+    
+    def query(self, question: str, context=None):
+        """Synchronous query method"""
+        return self.loop.run_until_complete(
+            self.component.query(question, context)
+        )
+    
+    def get_health_status(self):
+        """Synchronous health check"""
+        return self.loop.run_until_complete(
+            self.component.get_health_status()
+        )
+
+# Usage example
+def sync_usage_example():
+    with LightRAGSync() as lightrag:
+        response = lightrag.query("What is clinical metabolomics?")
+        print(f"Answer: {response.answer}")
+        
+        health = lightrag.get_health_status()
+        print(f"System health: {health.status}")
+
+if __name__ == "__main__":
+    sync_usage_example()
+```
+
+This API documentation provides comprehensive coverage of all LightRAG integration components and their usage patterns, including advanced examples for production use cases.
